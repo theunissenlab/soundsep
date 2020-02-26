@@ -291,20 +291,16 @@ def threshold_all_events(
         window_size=10.0
     ):
     """Find intervals of potential vocalizations periods (in seconds)
-
-    The last two windows are combined in case the duration is not an
-    even multiple of the window_size
     """
     sampling_rate = audio_signal.sampling_rate
     signal_duration = len(audio_signal) / sampling_rate
-    window_starts = np.arange(0, signal_duration - window_size, window_size)
-    window_stops = window_starts + window_size
-    window_stops[-1] = signal_duration
 
     last_interval_to_check = None
     all_intervals = []
 
-    for window_start, window_stop in zip(window_starts, window_stops):
+    for window_start in np.arange(0, signal_duration, window_size):
+        window_stop = min(window_start + window_size, signal_duration)
+
         t_arr, window_signal = audio_signal.time_slice(window_start, window_stop)
         window_signal = window_signal - np.mean(window_signal, axis=0)
         window_signal = bandpass_filter(window_signal.T, sampling_rate, 1000, 8000).T

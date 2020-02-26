@@ -4,10 +4,11 @@ import soundfile
 
 class AudioSliceInterface(object):
     """Abstract base class for data access"""
+
     def time_slice(self, t_start, t_stop):
         if t_start < 0.0:
             raise ValueError("t_start ({:.2f}) cannot be < 0".format(t_start))
-        if t_stop > int(len(self) / self.sampling_rate):
+        if t_stop > len(self) / self.sampling_rate:
             raise ValueError("t_stop ({:.2f}) cannot be > {:.2f} "
                 "(the length of the file)".format(t_stop, int(len(self) / self.sampling_rate)))
         data = self._time_slice(t_start, t_stop)
@@ -61,9 +62,82 @@ class LazyWavInterface(AudioSliceInterface):
         duration = int(np.round((t_stop - t_start) * self.sampling_rate))
 
         data, _ = soundfile.read(self._filename, duration, offset, dtype=self._dtype)
+
+        if data.ndim == 1:
+            data = data[:, None]
+
         return data
 
 
+class LazyMultiWavInterface(LazyWavInterface):
+    """Read amplitude data directly from multiple wav files (1 per channel)
+
+    Reads the data into memory only when requested
+
+    Files must only have one channel each (enforced at read time), all
+    have the same sampling rate, and all have the same length.
+
+    Files used must be of specific format - if there are errors
+    in loading or reading data, try re-saving the wav file using
+    scipy.io.wavfile.write, and use the np.int16 dtype.
+    """
+    def __init__(self, filenames, dtype=np.float64):
+        self._dtype = dtype
+        self._filenames = filenames
+        self.sampling_rate = None
+        self.frames = None
+        self.n_channels = len(filenames)
+
+        for filename in filenames:
+            with soundfile.SoundFile(filename) as f:
+                if self.sampling_rate is None:
+                    self.sampling_rate = f.samplerate
+
+                if self._frames is None:
+                    self._frames = f.frames
+
+                if self.sampling_rate != f.samplerate:
+                    raise Exception("All .wav files must have the same sample rate\n"
+                        "{}: {} but {}: {}".format(
+                            filenames[0],
+                            self.sampling_rate,
+                            filename,
+                            f.samplerate
+                        )
+                    )
+
+                if self._frames != f.frames:
+                    raise Exception("All .wav files must have the same length\n"
+                        "{}: {} but {}: {}".format(
+                            filenames[0],
+                            self._frames,
+                            filename,
+                            f.frames
+                        )
+                    )
+
+    def _time_slice(self, t_start, t_stop):
+        offset = int(np.round(t_start * self.sampling_rate))
+        duration = int(np.round((t_stop - t_start) * self.sampling_rate))
+
+        data = np.zeros((duration, self.n_channels))
+
+        for ch, filename in enumerate(self._filenames):
+            ch_data, _ = soundfile.read(filename, duration, offset, dtype=self._dtype)
+
+            if ch_data.ndim == 1:
+                ch_data = ch_data[:, None]
+
+            if ch_data.shape[1] > 1:
+                raise Exception("Cannot use .wav file with more than 1 channel\n"
+                    "{} has {} channels.".format(filename, ch_data.shape[1]))
+
+            data[:, ch] = ch_data[:, 0]
+
+        return data
+
+
+'''
 class LazySignalInterface(AudioSliceInterface):
     """Placeholder for reading from custom lazy loading object
     """
@@ -73,42 +147,4 @@ class LazySignalInterface(AudioSliceInterface):
 
     def _time_slice(self, t_start, t_stop):
         return self._lazy_object.time_slice(t_start, t_stop)
-
-
-#  Using soundfile.SoundFile instead now since wave package doesn't seem
-#    to support float64 dtype?
-'''class LazyWavLoader(object):
-    """Lazy .wav file loader
-
-    Using soundfile.SoundFile instead now since wave package doesn't seem
-    to support float64 dtype?
-    """
-
-    def __repr__(self):
-        return "LazyWavLoader({}) <framerate={}, frames={}, channels={}>".format(
-            self._filename, self._framerate, self._nframes, self._nchannels
-        )
-
-    def __init__(self, filename):
-        raise NotImplementedError("Not using because wav package does not support float64 dtype.")
-        self._filename = filename
-        with wave.open(self._filename, "rb") as wavfile:
-            self._framerate = wavfile.getframerate()
-            self._nchannels = wavfile.getnchannels()
-            self._sampwidth = wavfile.getsampwidth()
-            self._nframes = wavfile.getnframes()
-
-    def read(self, n_samples, n_offset=0):
-        with wave.open(self._filename, "rb") as wavfile:
-            wavfile.setpos(n_offset)
-            s = wavfile.readframes(n_samples)
-
-        # The i2 assumes the data is in int16 format with _sampwidth = 2
-        # This can be generalized using
-        #     pyaudio.get_format_from_width(_sampwidth)
-        # and refering to the scipy.io.wavfile source code that selects
-        # the correct dtype
-
-        data = np.frombuffer(s, dtype="i2")
-        return data.reshape(-1, self._nchannels)
 '''
