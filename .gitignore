@@ -1,5 +1,6 @@
 examples/*.npy
 examples/*.wav
+examples
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
