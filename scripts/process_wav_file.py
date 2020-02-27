@@ -35,6 +35,26 @@ if __name__ == "__main__":
         output_folder = os.path.join(dirname, "outputs", basename)
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
+        else:
+            print("You have have run this before; the data exists at {}".format(output_folder))
+            ok = input("Input [y] to overwrite existing data: ")
+            if ok.lower() != "y":
+                print("""
+
+                Aborting. If you want to view the data you ran before,
+                Run the jupyter notebook and open notebooks/View Detected Sounds.ipynb...
+                Fill in the paths to the corresponding variables:
+
+                SPECTROGRAMS_PATH = "{}"
+                WAVFILE_PATH = "{}"
+                INTERVALS_PATH = "{}"
+
+                """.format(
+                    os.path.join("..", output_folder, "{}_spectrograms.npy".format(basename)),
+                    os.path.join("..", sys.argv[1]),
+                    os.path.join("..", output_folder, "{}_intervals.npy".format(basename)),
+                ))
+                sys.exit(0)
 
     audio_signal = LazyWavInterface(filename, dtype=np.float64)
 
@@ -67,11 +87,31 @@ if __name__ == "__main__":
             scale_factor=1.25,
         )
 
+        # since we padded the signal above, we need to be careful
+        # about not accidentally adding intervals outside our original t1 -> t2
+        # slice (they might belong to another detection window)
         for idx1, idx2 in inner_intervals:
-            intervals.append((
-                t1 - padding + (idx1 / audio_signal.sampling_rate),
-                t1 - padding + (idx2 / audio_signal.sampling_rate)
-            ))
+            if (idx1 / audio_signal.sampling_rate) < padding:
+                if (idx2 / audio_signal.sampling_rate) < padding:
+                    continue
+                else:
+                    intervals.append((
+                        t1,
+                        t1 - padding + (idx2 / audio_signal.sampling_rate)
+                    ))
+            elif t1 - padding + (idx2 / audio_signal.sampling_rate) > t2:
+                if t1 - padding + (idx1 / audio_signal.sampling_rate) > t2:
+                    continue
+                else:
+                    intervals.append((
+                        t1 - padding + (idx1 / audio_signal.sampling_rate),
+                        t2
+                    ))
+            else:
+                intervals.append((
+                    t1 - padding + (idx1 / audio_signal.sampling_rate),
+                    t1 - padding + (idx2 / audio_signal.sampling_rate)
+                ))
 
     print("Split intervals in {:.2f}s file in {:.2f}s".format(
         len(audio_signal) / audio_signal.sampling_rate,
@@ -132,3 +172,22 @@ if __name__ == "__main__":
 
     np.save(os.path.join(output_folder, "{}_spectrograms.npy".format(basename)), all_call_spectrograms)
     np.save(os.path.join(output_folder, "{}_calls.npy".format(basename)), all_calls)
+
+
+    print("""
+
+    {} potential calls detected
+
+    Run the jupyter notebook and open notebooks/View Detected Sounds.ipynb...
+    Fill in the paths to the corresponding variables:
+
+    SPECTROGRAMS_PATH = "{}"
+    WAVFILE_PATH = "{}"
+    INTERVALS_PATH = "{}"
+
+    """.format(
+        len(intervals),
+        os.path.join("..", output_folder, "{}_spectrograms.npy".format(basename)),
+        os.path.join("..", sys.argv[1]),
+        os.path.join("..", output_folder, "{}_intervals.npy".format(basename)),
+    ))

@@ -4,7 +4,9 @@ Sound separation code for zebra finch vocalizations.
 
 ## Extract potential calls from a file
 
-This is a quick script that extracts calls from the first channel of a wav file. From top level of the project (after installing dependencies and activating virtual environment), run
+This is a quick script that extracts calls from the first channel of a wav file. A more sophisticated extraction strategy from multichannel wav files or multiple simultaneously recorded wav files should use custom code based on this script.
+
+From top level of the project (after installing dependencies and activating virtual environment), run
 
 ```
 python scripts/process_wav_file.py <path_to_wav_file>

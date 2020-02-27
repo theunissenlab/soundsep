@@ -85,7 +85,7 @@ class LazyMultiWavInterface(LazyWavInterface):
         self._dtype = dtype
         self._filenames = filenames
         self.sampling_rate = None
-        self.frames = None
+        self._frames = None
         self.n_channels = len(filenames)
 
         for filename in filenames:
