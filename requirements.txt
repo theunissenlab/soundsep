@@ -5,6 +5,7 @@ ipython==7.9.0
 jupyter==1.0.0
 numpy==1.18.1
 pandas==0.24.2
+pyqtgraph==0.10.0
 PyQt5==5.14.1
 scikit-learn==0.22.1
 scipy==1.4.1
