@@ -28,6 +28,7 @@ class NumpyDataInterface(AudioSliceInterface):
     def __init__(self, data, sampling_rate):
         self._data = data
         self.sampling_rate = sampling_rate
+        self.n_channels = self._data.shape[1]
 
     def __len__(self):
         return self._data.shape[0]
@@ -53,6 +54,7 @@ class LazyWavInterface(AudioSliceInterface):
         with soundfile.SoundFile(filename) as f:
             self.sampling_rate = f.samplerate
             self._frames = f.frames
+            self.n_channels = f.channels
 
     def __len__(self):
         return self._frames
@@ -67,6 +69,10 @@ class LazyWavInterface(AudioSliceInterface):
             data = data[:, None]
 
         return data
+
+    @property
+    def t_max(self):
+        return self._frames / self.sampling_rate
 
 
 class LazyMultiWavInterface(LazyWavInterface):
