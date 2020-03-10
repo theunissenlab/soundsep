@@ -6,12 +6,15 @@ import os
 import re
 from functools import partial
 
+import hdbscan
 import numpy as np
 import pyqtgraph as pg
+import scipy
 import sounddevice as sd
 import umap
 from fbs_runtime.application_context.PyQt5 import ApplicationContext
-from PyQt5.QtCore import Qt, QObject, QSettings, QTimer, pyqtSignal
+from PyQt5.QtCore import (Qt, QObject, QSettings, QThread, QTimer,
+        pyqtSignal, pyqtSlot)
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
 from PyQt5.QtWidgets import QMainWindow
 from PyQt5 import QtGui as gui
@@ -22,23 +25,28 @@ from sklearn.decomposition import PCA
 from soundsig.sound import spectrogram
 from soundsig.signal import bandpass_filter
 
+from audio_utils import get_amplitude_envelope
 from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
 
 
-def _spec2icon(spec):
-    """Convert to icon by choosing the best channel and taking the log"""
+def _spec2icon(spec, dBNoise=40):
+    """Convert a spectrogram into a grayscale Qt icon
+
+    Chooses the channel with the higher amplitude and converts to dB
+    """
     spec = np.abs(spec)
     if spec.ndim == 3:
         best_ch = np.where(spec == np.max(spec))[0][0]
         spec = spec[best_ch]
 
     # spec must be flipped upside down for icon
-    spec = spec[::-1]
     spec = 20 * np.log10(spec)
-    min_val = np.max(spec) - 40
+    min_val = np.max(spec) - dBNoise
     spec[spec < min_val] = min_val
     spec = spec - np.min(spec)
+    spec = spec[::-1]
 
+    # Convert to grayscale pixel values
     spec = 255 * spec / np.max(spec)
     spec = np.require(spec, np.uint8, "C")
 
@@ -50,6 +58,55 @@ def _spec2icon(spec):
     )
     icon = gui.QPixmap.fromImage(qtimage)
     return gui.QIcon(icon)
+
+
+class Singleton():
+    """Alex Martelli implementation of Singleton (Borg)
+    http://python-3-patterns-idioms-test.readthedocs.io/en/latest/Singleton.html"""
+    _shared_state = {}
+
+    def __init__(self):
+        self.__dict__ = self._shared_state
+
+
+class AppData(Singleton):
+    def __init__(self):
+        Singleton.__init__(self)
+        self._data = {}
+
+    def get(self, key):
+        return self._data.get(key)
+
+    def set(self, key, value):
+        self._data[key] = value
+
+    def update(self, update_dict):
+        for key, val in update_dict.items():
+            self._data[key] = val
+
+    def has(self, key):
+        return key in self._data
+
+    def clear(self, key):
+        del self._data[key]
+
+
+class BackgroundEmbedding(QObject):
+    """Async worker for computing umap embedding"""
+    finished = pyqtSignal(object)
+
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+
+    @pyqtSlot()
+    def compute(self):
+        points = self.data.reshape(len(self.data), -1)
+        points = PCA(n_components=20, whiten=True).fit_transform(points)
+        embedding = umap.UMAP(
+            n_neighbors=10, repulsion_strength=100.0, min_dist=0.9
+        ).fit_transform(points)
+        self.finished.emit(embedding)
 
 
 class App(widgets.QMainWindow):
@@ -68,28 +125,95 @@ class App(widgets.QMainWindow):
         super().__init__()
         self.title = "SoundSep"
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
-        self.loaded_data = {}
+        self.loaded_data = AppData()
+
         self.init_actions()
         self.init_ui()
+        self.init_menus()
+
+        self.thread = None
 
     def init_actions(self):
         self.open_directory_action = widgets.QAction("Open Wav Directory...", self)
         self.open_directory_action.triggered.connect(self.run_directory_loader)
+        self.run_embedding_action = widgets.QAction("Run UMAP", self)
+        self.run_embedding_action.triggered.connect(self.run_embedding)
+        self.run_labeler_action = widgets.QAction("Run HDBSCAN Labeling", self)
+        self.run_labeler_action.triggered.connect(self.run_labeler)
+        self.save_embedding_action = widgets.QAction("Save Embedding", self)
+        self.save_embedding_action.triggered.connect(self.save_embedding)
+        self.save_labels_action = widgets.QAction("Save Labels", self)
+        self.save_labels_action.triggered.connect(self.save_labels)
 
     def init_ui(self):
         self.setWindowTitle(self.title)
 
-    def init_ui(self):
-        self.setWindowTitle(self.title)
+    def init_menus(self):
         mainMenu = self.menuBar()
+
         fileMenu = mainMenu.addMenu("&File")
         fileMenu.addAction(self.open_directory_action)
+        fileMenu.addSeparator()
+        fileMenu.addAction(self.save_embedding_action)
+        fileMenu.addAction(self.save_labels_action)
+
+        analysisMenu = mainMenu.addMenu("&Analysis")
+        analysisMenu.addAction(self.run_embedding_action)
+        analysisMenu.addAction(self.run_labeler_action)
+
         self.display_viewer()
 
     def display_viewer(self):
         self.main_view = MainView(self)
         self.setCentralWidget(self.main_view)
         self.show()
+
+    def on_close(self):
+        if self.thread:
+            self.thread.terminate()
+
+    def run_embedding(self):
+        """Compute a pca->umap embedding for the detected audio data async"""
+        specs = self.loaded_data.get("spectrograms")
+        self.worker = BackgroundEmbedding(specs)
+        self._reset_thread()
+        # if not self.loaded_data.has("embedding"):
+        self.run_embedding_action.setDisabled(True)
+        self.run_labeler_action.setDisabled(True)
+        self.worker.finished.connect(self._on_embedding_completed)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.compute)
+        self.thread.start()
+
+    def _on_embedding_completed(self, embedding):
+        self.run_embedding_action.setDisabled(False)
+        self.run_labeler_action.setDisabled(False)
+
+        self.loaded_data.set("embedding", embedding)
+        self.signalLoadedData.emit(self.loaded_data)
+
+    def _reset_thread(self):
+        self.thread = QThread(self)
+        return self.thread
+
+    def run_labeler(self):
+        """Label the loaded data using a pca->umap embedding and hdbscan
+        """
+        if self.loaded_data.get("labels") is not None:
+            # Raise confirmation to relabel data
+            return
+
+        if not self.loaded_data.has("embedding"):
+            self.run_embedding()
+            self.worker.finished.connect(self._run_labeler)
+        else:
+            self._run_labeler()
+
+    def _run_labeler(self):
+        embedding = self.loaded_data.get("embedding")
+        labels = hdbscan.HDBSCAN().fit_predict(embedding)
+        self.loaded_data.set("labels", labels)
+        self.signalLoadedData.emit(self.loaded_data)
 
     def run_directory_loader(self):
         """Dialog to read in a directory of wav files and intervals
@@ -117,39 +241,48 @@ class App(widgets.QMainWindow):
             self.settings.setValue("file/wavfile", selected_file)
             self.load_dir(selected_file)
 
-    def load_dir(self, selected_file):
-        self.loaded_dir = selected_file
+    def save_embedding(self):
+        if self.loaded_data.has("embedding"):
+            np.save(self.embedding_file, self.loaded_data.get("embedding"))
 
+    def save_labels(self):
+        if self.loaded_data.has("labels"):
+            np.save(self.labels_file, self.loaded_data.get("labels"))
+
+    def load_dir(self, selected_file):
         if not os.path.isdir(selected_file):
             raise IOError("{} is not a directory".format(selected_file))
 
-        regexp = r"([0-9]+)"
+        self.data_directory = os.path.join(selected_file, "outputs")
         wav_files = glob.glob(os.path.join(selected_file, "ch[0-9]*.wav"))
-        intervals_file = os.path.join(selected_file, "intervals.npy")
-        spectrograms_file = os.path.join(selected_file, "spectrograms.npy")
-        labels_file = os.path.join(selected_file, "labels.npy")
+        self.intervals_file = os.path.join(self.data_directory, "intervals.npy")
+        self.spectrograms_file = os.path.join(self.data_directory, "spectrograms.npy")
+        self.labels_file = os.path.join(self.data_directory, "labels.npy")
+        self.embedding_file = os.path.join(self.data_directory, "embedding.npy")
 
         if not len(wav_files):
             raise IOError("No files matching {} found".format(
                     os.path.join(selected_file, regexp)))
-        if not os.path.exists(intervals_file):
-            raise IOError("No file named {} exists".format(intervals_file))
-        if not os.path.exists(spectrograms_file):
-            raise IOError("No file named {} exists".format(spectrograms_file))
-        if not os.path.exists(labels_file):
-            raise IOError("No file named {} exists".format(labels_file))
-
-        # Order the wav files by channel number
-        wav_files = sorted(wav_files, key=lambda x: int(re.search(regexp, x).groups()[0]))
+        if not os.path.exists(self.intervals_file):
+            raise IOError("No file named {} exists".format(self.intervals_file))
+        if not os.path.exists(self.spectrograms_file):
+            raise IOError("No file named {} exists".format(self.spectrograms_file))
 
         # TODO (kevin): Make it optional for intervals, spectrograms, and labels
         # to exist... we should be able to generate these
-        self.loaded_data = {
-            "wav": LazyWavInterface(wav_files[0]),
-            "intervals": np.load(intervals_file)[()],
-            "spectrograms": np.load(spectrograms_file)[()],
-            "labels": np.load(labels_file)[()],
-        }
+        if len(wav_files) > 1:
+            wav_object = LazyMultiWavInterface.create_from_directory(selected_file)
+        else:
+            wav_object = LazyWavInterface(wav_files[0])
+
+        self.loaded_data.set("wav", wav_object)
+        self.loaded_data.set("intervals", np.load(self.intervals_file)[()])
+        self.loaded_data.set("spectrograms", np.load(self.spectrograms_file)[()])
+        if os.path.exists(self.embedding_file):
+            self.loaded_data.set("embedding", np.load(self.embedding_file)[()])
+        if os.path.exists(self.labels_file):
+            self.loaded_data.set("labels", np.load(self.labels_file)[()])
+        self.loaded_data.set("loaded_dir", selected_file)
         self.signalLoadedData.emit(self.loaded_data)
 
 
@@ -161,6 +294,8 @@ class MainView(widgets.QWidget):
         super().__init__(parent)
         self.init_ui()
         self.init_plots()
+
+        self.loaded_data = AppData()
 
         self.parent().signalLoadedData.connect(self.on_data_load)
 
@@ -202,16 +337,19 @@ class MainView(widgets.QWidget):
             None,
             data_loaded_signal=self.parent().signalLoadedData
         )
+
         self.spectrogram_widget = AudioView(
             None,
             data_loaded_signal=self.parent().signalLoadedData,
             snippet_selected_signal=self.parent().snippetSelected
         )
+
         self.cluster_select_widget = ClusterSelectView(
             None,
             data_loaded_signal=self.parent().signalLoadedData,
             cluster_selected_signal=self.parent().clusterSelected
         )
+
         self.snippet_select_widget = SnippetSelectView(
             None,
             cluster_selected_signal=self.parent().clusterSelected,
@@ -239,7 +377,7 @@ class MainView(widgets.QWidget):
     def on_data_load(self, data):
         self.topLeftBox.setDisabled(False)
         self.topRightBox.setDisabled(False)
-        self.topBarLabel.setText(self.parent().loaded_dir)
+        self.topBarLabel.setText(self.loaded_data.get("loaded_dir"))
 
 
 class Scatter2DView(widgets.QWidget):
@@ -250,6 +388,7 @@ class Scatter2DView(widgets.QWidget):
     def __init__(self, parent=None, data_loaded_signal=None):
         super().__init__(parent)
         self.init_ui()
+        self.loaded_data = AppData()
         data_loaded_signal.connect(self.on_data_load)
 
     def init_ui(self):
@@ -260,6 +399,7 @@ class Scatter2DView(widgets.QWidget):
         # self.scatter.hoverEvent = None
         # self.scatter.mouseClickEvent = None
         self.plot.addItem(self.scatter)
+        self.plot.plotItem.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("left")
         self.plot.hideAxis("bottom")
 
@@ -269,23 +409,13 @@ class Scatter2DView(widgets.QWidget):
         self.setLayout(layout)
 
     def on_data_load(self, data):
-        self._spectrograms = data["spectrograms"]
-        points = self._spectrograms.reshape(len(data["spectrograms"]), -1)
-        self.set_data(points)
+        if not self.loaded_data.has("embedding"):
+            self.setDisabled(True)
+        else:
+            self._embedding = self.loaded_data.get("embedding")
+            self.set_data(self._embedding)
 
-    def set_data(self, data, projection="umap"):
-        if projection not in self.valid_projections:
-            raise ValueError("Scatter2DView projection must be in {}".format(
-                    self.valid_projections))
-
-        # Decativate panel while loading
-        if projection == "pca":
-            embedding = PCA(n_components=2, whiten=True).fit_transform(data)
-        elif projection == "umap":
-            embedding = umap.UMAP(
-                n_neighbors=10, repulsion_strength=100.0, min_dist=0.9
-            ).fit_transform(data)
-
+    def set_data(self, embedding):
         self.scatter.setData([
             {"pos": [x, y]} for x, y in embedding
         ])
@@ -309,6 +439,8 @@ class AudioView(widgets.QWidget):
     2. Play sample audio of selected window
     3. Show spectrogram
     4. Select time range with scrollbar
+
+    Also include a second tab to switch between spectrogram and amplitude
     """
     win_size = 3.0  # seconds
     spec_sample_rate = 500
@@ -320,6 +452,7 @@ class AudioView(widgets.QWidget):
             snippet_selected_signal=None):
         super().__init__(parent)
         self.init_ui()
+        self.loaded_data = AppData()
 
         self.view_ch = 0
         self.current_step = 0
@@ -372,7 +505,8 @@ class AudioView(widgets.QWidget):
     def reset_playback_line(self):
         self.timer.stop()
         self._playback_line_pos = -1
-        self.playback_line.setValue(self._playback_line_pos)
+        self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
+        self.amplitude_plot.playback_line.setValue(self._playback_line_pos)
 
     def advance_playback_line(self):
         """Step the playback line forward in time
@@ -382,31 +516,58 @@ class AudioView(widgets.QWidget):
         max_playback_line_pos = int(self.win_size * self.spec_sample_rate)
         if self._playback_line_pos < max_playback_line_pos:
             self._playback_line_pos += 1
-            self.playback_line.setValue(self._playback_line_pos)
+            self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
+            self.amplitude_plot.playback_line.setValue(self._playback_line_pos)
         else:
             self.reset_playback_line()
 
     def init_ui(self):
-        self.plot = pg.PlotWidget()
+        ### Spectrogram Plot
+        self.spectrogram_plot = pg.PlotWidget()
+        self.spectrogram_plot.plotItem.setMouseEnabled(x=False, y=False)
         self.image = pg.ImageItem()
-        self.playback_line = pg.InfiniteLine()
-        self.snippet_line_start = pg.InfiniteLine()
-        self.snippet_line_stop = pg.InfiniteLine()
-
-        self.plot.addItem(self.image)
-        self.plot.addItem(self.playback_line)
-        self.plot.addItem(self.snippet_line_start)
-        self.plot.addItem(self.snippet_line_stop)
-
-        self.plot.hideAxis("left")
-        self.plot.hideAxis("bottom")
-        self.plot.setLimits(
+        self.spectrogram_plot.playback_line = pg.InfiniteLine()
+        self.spectrogram_plot.snippet_line_start = pg.InfiniteLine()
+        self.spectrogram_plot.snippet_line_stop = pg.InfiniteLine()
+        self.spectrogram_plot.addItem(self.image)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.playback_line)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.snippet_line_start)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.snippet_line_stop)
+        self.spectrogram_plot.hideAxis("left")
+        self.spectrogram_plot.hideAxis("bottom")
+        self.spectrogram_plot.setLimits(
             xMin=0,
             xMax=int(self.win_size * self.spec_sample_rate),
             yMin=0,
             yMax=int((self.max_freq - self.min_freq) / self.spec_freq_spacing)
         )
 
+        ### Amplitude Plot
+        # The amplitude plot will use the same sampling rate as the spectrograms
+        # ideally to make the playback line simpler...
+        self.amplitude_plot = pg.PlotWidget()
+        self.amplitude_plot.plotItem.setMouseEnabled(x=False, y=False)
+        self.amplitude_plot.playback_line = pg.InfiniteLine()
+        self.amplitude_plot.snippet_line_start = pg.InfiniteLine()
+        self.amplitude_plot.snippet_line_stop = pg.InfiniteLine()
+        self.amplitude_plot.addItem(self.amplitude_plot.playback_line)
+        self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_start)
+        self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_stop)
+        self.amplitude_plot.hideAxis("left")
+        self.amplitude_plot.hideAxis("bottom")
+        self.amplitude_plot.setLimits(
+            xMin=0,
+            xMax=int(self.win_size * self.spec_sample_rate),
+            yMin=0,
+            yMax=1
+        )
+
+        # Put the plots in a tab widget
+        self.tab_panel = widgets.QTabWidget(self)
+        self.tab_panel.addTab(self.spectrogram_plot, "Spectrogram")
+        self.tab_panel.addTab(self.amplitude_plot, "Amplitude Envelope")
+
+        # Other widgets in this panel
         self.channelSelectLayout = widgets.QHBoxLayout()
         self._set_n_channels(1)
 
@@ -414,7 +575,6 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setValue(0)
         self.scrollbar.setMinimum(0)
         self.scrollbar.setMaximum(100)
-        # self.scrollbar.setStep(0.01)
         self.scrollbar.valueChanged.connect(self.change_range)
 
         self.windowInfoLayout = widgets.QHBoxLayout()
@@ -424,16 +584,15 @@ class AudioView(widgets.QWidget):
 
         layout = widgets.QVBoxLayout()
         layout.addLayout(self.channelSelectLayout)
-        layout.addWidget(self.plot)
+        layout.addWidget(self.tab_panel)
         layout.addWidget(self.scrollbar)
         layout.addLayout(self.windowInfoLayout)
-
         layout.addStretch(1)
         self.setLayout(layout)
 
     def on_data_load(self, data):
-        self._loaded_wav = data["wav"]
-        self._loaded_intervals = data["intervals"]
+        self._loaded_wav = self.loaded_data.get("wav")
+        self._loaded_intervals = self.loaded_data.get("intervals")
         self.update_scroll_bar()
         self.change_range(0)
         self._set_n_channels(self._loaded_wav.n_channels)
@@ -448,8 +607,10 @@ class AudioView(widgets.QWidget):
         line_pos_start = (t0 - approx_step * self.t_step) * self.spec_sample_rate
         line_pos_stop = (t1 - approx_step * self.t_step) * self.spec_sample_rate
 
-        self.snippet_line_start.setValue(line_pos_start)
-        self.snippet_line_stop.setValue(line_pos_stop)
+        self.spectrogram_plot.snippet_line_start.setValue(line_pos_start)
+        self.spectrogram_plot.snippet_line_stop.setValue(line_pos_stop)
+        self.amplitude_plot.snippet_line_start.setValue(line_pos_start)
+        self.amplitude_plot.snippet_line_stop.setValue(line_pos_stop)
 
     def update_scroll_bar(self):
         """Set scrollbar params to match current audio file length and window size"""
@@ -467,22 +628,29 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setPageStep(page_step)
 
     def change_range(self, new_value):
-        self.snippet_line_start.setValue(-1)
-        self.snippet_line_stop.setValue(-1)
+        self.spectrogram_plot.snippet_line_start.setValue(-1)
+        self.spectrogram_plot.snippet_line_stop.setValue(-1)
+        self.amplitude_plot.snippet_line_start.setValue(-1)
+        self.amplitude_plot.snippet_line_stop.setValue(-1)
         self.current_step = new_value
         self.scrollbar.setValue(new_value)
         self.update_image()
         self.update_time_label()
 
     def update_image(self):
-        sd.stop()
-        self.reset_playback_line()
-
         t1 = self.t_step * self.current_step
         t2 = t1 + self.win_size
 
         t_arr, sig = self._loaded_wav.time_slice(t1, t2)
         sig -= np.mean(sig, axis=0)
+
+        sd.stop()
+        self.reset_playback_line()
+
+        self._update_image_spectrogram(sig)
+        self._update_image_amplitude(sig)
+
+    def _update_image_spectrogram(self, sig):
         self._sig = sig
         t_spec, f_spec, spec, _ = spectrogram(
             sig[:, self.view_ch],
@@ -500,6 +668,35 @@ class AudioView(widgets.QWidget):
 
         self.image.setImage(logspec.T)
 
+    def _update_image_amplitude(self, sig):
+        highlighter_pen = pg.mkPen((29, 224, 32, 255))
+        bg_pen = pg.mkPen((204, 204, 204, 127))
+
+        for ch in range(sig.shape[1]):
+            amp_env = get_amplitude_envelope(sig[:, ch])
+            # Downsample amp_env to spectrogram sampling rate
+            downsample_to_n_samples = int(self.win_size * self.spec_sample_rate)
+            amp_env = scipy.signal.resample(amp_env, downsample_to_n_samples)
+            self.amplitude_plot.plot(
+                list(np.arange(len(amp_env))),
+                list(amp_env),
+                clear=True if ch == 0 else False,
+                pen=highlighter_pen if ch == self.view_ch else bg_pen
+            )
+
+        # Need to add the overlaied lines again since they were cleared by
+        # the plot function above.
+        self.amplitude_plot.addItem(self.amplitude_plot.playback_line)
+        self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_start)
+        self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_stop)
+
+        self.amplitude_plot.setLimits(
+            xMin=0,
+            xMax=len(amp_env),
+            yMin=0,
+            yMax=np.max(sig)
+        )
+
     def update_time_label(self):
         t1 = self.t_step * self.current_step
         t2 = t1 + self.win_size
@@ -515,11 +712,16 @@ class ClusterSelectView(widgets.QScrollArea):
         super().__init__(parent)
         self.init_ui()
         self.cluster_selected_signal = cluster_selected_signal
+        self._button_positions = {}
         data_loaded_signal.connect(self.on_data_load)
 
     def on_data_load(self, data):
-        self._labels = data["labels"]
-        self._spectrograms = data["spectrograms"]
+        self._labels = data.get("labels")
+        self._spectrograms = data.get("spectrograms")
+        if not data.has("labels"):
+            self.setDisabled(True)
+        else:
+            self.setDisabled(False)
         self.reset_buttons()
 
     def init_ui(self):
@@ -543,8 +745,11 @@ class ClusterSelectView(widgets.QScrollArea):
             cluster_select = ImgButton(
                 self._get_cluster_icon(l),
                 l,
-                button_callback=self._button_callback
+                button_callback=self._button_callback,
+                radio=True,
+                parent=self
             )
+            self._button_positions[l] = (row, col)
             self.layout.addWidget(cluster_select, row, col, 1, 1)
 
     def _button_callback(self, label):
@@ -553,6 +758,16 @@ class ClusterSelectView(widgets.QScrollArea):
             self._spectrograms[self._labels == label],
             np.where(self._labels == label)[0]
         )
+        row, col = self._button_positions.get(label)
+
+        # Manual implementation of mutually exclusive radio buttons
+        # - only leave selected the currently chosen button
+        for button_label, (row, col) in self._button_positions.items():
+            button = self.layout.itemAtPosition(row, col)
+            if button_label == label:
+                button.widget().button.setChecked(True)
+            else:
+                button.widget().button.setChecked(False)
 
     def _get_cluster_icon(self, label):
         mean_spectrogram = np.mean(self._spectrograms[self._labels == label], axis=0)
@@ -568,6 +783,7 @@ class SnippetSelectView(widgets.QScrollArea):
                 snippet_selected_signal=None):
         super().__init__(parent)
         self._spectrograms = []
+        self._button_positions = {}
 
         self.init_ui()
 
@@ -597,6 +813,7 @@ class SnippetSelectView(widgets.QScrollArea):
                 idx,
                 self._button_callback
             )
+            self._button_positions[idx] = (row, col)
             self.layout.addWidget(cluster_select, row, col, 1, 1)
 
     def _get_spectrogram_icon(self, idx):
@@ -607,6 +824,23 @@ class SnippetSelectView(widgets.QScrollArea):
     def _button_callback(self, idx):
         """Report the index of the selected snippet up the chain
         """
+        modifiers = widgets.QApplication.keyboardModifiers()
+        if modifiers == Qt.ShiftModifier:
+            # select multiple mode - make the buttons pressed
+            if idx in self._selected:
+                self._selected.remove(idx)
+            else:
+                self._selected.add(idx)
+        else:
+            self._selected = set([idx])
+
+        for button_idx, (row, col) in self._button_positions.items():
+            button = self.layout.itemAtPosition(row, col)
+            if button_idx in self._selected:
+                button.widget().button.setChecked(True)
+            else:
+                button.widget().button.setChecked(False)
+
         self.snippet_selected_signal.emit(idx)
 
     def on_cluster_select(self, label, spectrograms, indices):
@@ -619,11 +853,12 @@ class ImgButton(widgets.QFrame):
     """A pressable button that has a picture of a spectrogram on it
     """
 
-    def __init__(self, icon, label, button_callback=None, parent=None):
+    def __init__(self, icon, label, button_callback=None, radio=False, parent=None):
         super().__init__(parent)
         self._icon = icon
         self._label = label
         self._button_callback = button_callback
+        self._radio = radio
         self.init_ui()
 
         if self._button_callback is not None:
@@ -633,15 +868,20 @@ class ImgButton(widgets.QFrame):
         self.button.setIcon(self._icon)
 
         # TODO (kevin): fix these vlaues or configure them
-        self.button.setIconSize(QtCore.QSize(50, 60))
-        self.button.setFixedSize(QtCore.QSize(55, 66))
-        self.setFixedSize(QtCore.QSize(95, 110))
+        self.button.setIconSize(QtCore.QSize(60, 70))
+        self.button.setFixedSize(QtCore.QSize(65, 76))
+        self.setFixedSize(QtCore.QSize(100, 115))
 
         self.label.setText("{}".format(self._label))
 
     def init_ui(self):
         self.label = widgets.QLabel("n")
-        self.button = widgets.QPushButton()
+        if self._radio:
+            self.button = widgets.QRadioButton(parent=self.parent().frame)
+        else:
+            self.button = widgets.QPushButton()
+            self.button.setCheckable(True)
+
         layout = widgets.QVBoxLayout()
         layout.addWidget(self.label)
         layout.addWidget(self.button)
