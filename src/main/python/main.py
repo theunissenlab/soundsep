@@ -29,6 +29,9 @@ from audio_utils import get_amplitude_envelope
 from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
 
 
+ASYNC_FLAG = False
+
+
 def _spec2icon(spec, dBNoise=40):
     """Convert a spectrogram into a grayscale Qt icon
 
@@ -176,14 +179,17 @@ class App(widgets.QMainWindow):
         """Compute a pca->umap embedding for the detected audio data async"""
         specs = self.loaded_data.get("spectrograms")
         self.worker = BackgroundEmbedding(specs)
-        self._reset_thread()
-        # if not self.loaded_data.has("embedding"):
         self.run_embedding_action.setDisabled(True)
         self.run_labeler_action.setDisabled(True)
         self.worker.finished.connect(self._on_embedding_completed)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.compute)
-        self.thread.start()
+
+        if ASYNC_FLAG:
+            self._reset_thread()
+            self.worker.moveToThread(self.thread)
+            self.thread.started.connect(self.worker.compute)
+            self.thread.start()
+        else:
+            self.worker.compute()
 
     def _on_embedding_completed(self, embedding):
         self.run_embedding_action.setDisabled(False)
@@ -200,8 +206,15 @@ class App(widgets.QMainWindow):
         """Label the loaded data using a pca->umap embedding and hdbscan
         """
         if self.loaded_data.get("labels") is not None:
-            # Raise confirmation to relabel data
-            return
+            msg = "Are you sure you want to overwrite current labels?"
+            reply = widgets.QMessageBox.question(
+                    self,
+                    'Confirmation',
+                    msg,
+                    widgets.QMessageBox.Yes,
+                    widgets.QMessageBox.No)
+            if reply == widgets.QMessageBox.No:
+                return
 
         if not self.loaded_data.has("embedding"):
             self.run_embedding()
