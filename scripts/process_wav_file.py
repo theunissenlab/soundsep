@@ -59,12 +59,12 @@ if __name__ == "__main__":
         mode = "dir"
         dirname = filename
         basename = os.path.basename(filename)
-        output_folder = os.path.join(dirname, "outputs", basename)
+        output_folder = os.path.join(dirname, "outputs")
     elif os.path.splitext(filename)[1] == ".wav":
         mode = "wav"
         dirname = os.path.dirname(filename)
         basename = os.path.splitext(os.path.basename(filename))[0]
-        output_folder = os.path.join(dirname, "outputs", basename)
+        output_folder = os.path.join(dirname, "outputs")
     else:
         print("Filename {} must be a .wav file or a folder "
             "containing .wav files")
@@ -87,9 +87,9 @@ if __name__ == "__main__":
             INTERVALS_PATH = "{}"
 
             """.format(
-                os.path.join("..", output_folder, "{}_spectrograms.npy".format(basename)),
-                os.path.join("..", sys.argv[1]),
-                os.path.join("..", output_folder, "{}_intervals.npy".format(basename)),
+                os.path.join("..", output_folder, "spectrograms.npy".format(basename)),
+                os.path.join("..", filename) if mode == "wav" else os.path.join("..", dirname, "ch0.wav"),
+                os.path.join("..", output_folder, "intervals.npy".format(basename)),
             ))
             sys.exit(0)
 
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     ))
 
     ### SAVING intervals.npy
-    np.save(os.path.join(output_folder, "{}_intervals.npy".format(basename)), np.array(intervals))
+    np.save(os.path.join(output_folder, "intervals.npy"), np.array(intervals))
 
     centers_of_mass = []
     all_call_spectrograms = []
@@ -210,8 +210,8 @@ if __name__ == "__main__":
     all_call_spectrograms = np.array(all_call_spectrograms)
     all_calls = np.array(all_calls)
 
-    np.save(os.path.join(output_folder, "{}_spectrograms.npy".format(basename)), all_call_spectrograms)
-    np.save(os.path.join(output_folder, "{}_calls.npy".format(basename)), all_calls)
+    np.save(os.path.join(output_folder, "spectrograms.npy"), all_call_spectrograms)
+    np.save(os.path.join(output_folder, "calls.npy"), all_calls)
 
     print("""
 
@@ -227,6 +227,6 @@ if __name__ == "__main__":
     """.format(
         len(intervals),
         os.path.join("..", output_folder, "spectrograms.npy"),
-        os.path.join("..", sys.argv[1]),
+        os.path.join("..", filename) if mode == "wav" else os.path.join("..", dirname, "ch0.wav"),
         os.path.join("..", output_folder, "intervals.npy"),
     ))
