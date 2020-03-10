@@ -1,3 +1,7 @@
+import glob
+import os
+import re
+
 import numpy as np
 import soundfile
 
@@ -87,6 +91,23 @@ class LazyMultiWavInterface(LazyWavInterface):
     in loading or reading data, try re-saving the wav file using
     scipy.io.wavfile.write, and use the np.int16 dtype.
     """
+
+    @classmethod
+    def create_from_directory(cls, from_directory):
+        """Convenience function to create a LazyMultiWavInterface from a
+        directory containing wav files named ch0.wav, ch1.wav, ch2.wav, etc.
+        """
+        if not os.path.isdir(from_directory):
+            raise ValueError("from_directory must be an existing directory")
+        regexp = r"([0-9]+)"
+        filenames = glob.glob(os.path.join(from_directory, "ch[0-9]*.wav"))
+        if not len(filenames):
+            raise ValueError("No filenames matching ch[0-9]*.wav were found "
+                    "at {}".format(from_directory))
+        filenames = sorted(filenames, key=lambda x: int(re.search(regexp, x).groups()[0]))
+
+        return cls(filenames)
+
     def __init__(self, filenames, dtype=np.float64):
         self._dtype = dtype
         self._filenames = filenames

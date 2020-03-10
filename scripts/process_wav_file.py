@@ -7,7 +7,9 @@ Basically a script version of notebook examples 1 and 2
 import sys
 sys.path.append("code/soundsep")
 
+import argparse
 import os
+import textwrap
 import time
 
 import numpy as np
@@ -21,42 +23,80 @@ from detection.thresholding import (
     threshold_all_events,
     threshold_events
 )
-from interfaces.audio import LazyWavInterface
+from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
+
+
+parser = argparse.ArgumentParser(
+    prog='process_wav_file.py',
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    description=textwrap.dedent("""\
+        Process wav file
+        --------------------------------
+        Load a wav file for segmentation and spectrogram extraction.
+
+        Specify either a single wav file or a folder with wav files named
+        ch0.wav, ch1.wav, etc.
+
+        In an output folder, create numpy files with extracted call
+        intervals and multi-channel spectrograms.
+        """))
+parser.add_argument("location", type=str,
+    help="Path to wav file or folder containing wav files")
+parser.add_argument("-c", "--channel", type=int, default=0,
+    help="Channel index to threshold on")
 
 
 if __name__ == "__main__":
-    filename = sys.argv[1]
+    args = parser.parse_args()
+
+    filename = args.location
+    channel = args.channel
+
     if not os.path.exists(filename):
         print("Could not find {}".format(filename))
         sys.exit(1)
-    else:
+    elif os.path.isdir(filename):
+        mode = "dir"
+        dirname = filename
+        basename = os.path.basename(filename)
+        output_folder = os.path.join(dirname, "outputs", basename)
+    elif os.path.splitext(filename)[1] == ".wav":
+        mode = "wav"
         dirname = os.path.dirname(filename)
         basename = os.path.splitext(os.path.basename(filename))[0]
         output_folder = os.path.join(dirname, "outputs", basename)
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-        else:
-            print("You have have run this before; the data exists at {}".format(output_folder))
-            ok = input("Input [y] to overwrite existing data: ")
-            if ok.lower() != "y":
-                print("""
+    else:
+        print("Filename {} must be a .wav file or a folder "
+            "containing .wav files")
+        sys.exit(1)
 
-                Aborting. If you want to view the data you ran before,
-                Run the jupyter notebook and open notebooks/View Detected Sounds.ipynb...
-                Fill in the paths to the corresponding variables:
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    else:
+        print("You have have run this before; the data exists at {}".format(output_folder))
+        ok = input("Input [y] to overwrite existing data: ")
+        if ok.lower() != "y":
+            print("""
 
-                SPECTROGRAMS_PATH = "{}"
-                WAVFILE_PATH = "{}"
-                INTERVALS_PATH = "{}"
+            Aborting. If you want to view the data you ran before,
+            Run the jupyter notebook and open notebooks/View Detected Sounds.ipynb...
+            Fill in the paths to the corresponding variables:
 
-                """.format(
-                    os.path.join("..", output_folder, "{}_spectrograms.npy".format(basename)),
-                    os.path.join("..", sys.argv[1]),
-                    os.path.join("..", output_folder, "{}_intervals.npy".format(basename)),
-                ))
-                sys.exit(0)
+            SPECTROGRAMS_PATH = "{}"
+            WAVFILE_PATH = "{}"
+            INTERVALS_PATH = "{}"
 
-    audio_signal = LazyWavInterface(filename, dtype=np.float64)
+            """.format(
+                os.path.join("..", output_folder, "{}_spectrograms.npy".format(basename)),
+                os.path.join("..", sys.argv[1]),
+                os.path.join("..", output_folder, "{}_intervals.npy".format(basename)),
+            ))
+            sys.exit(0)
+
+    if mode == "dir":
+        audio_signal = LazyMultiWavInterface.create_from_directory(dirname)
+    elif mode == "wav":
+        audio_signal = LazyWavInterface(filename, dtype=np.float64)
 
     # Initial thresholding
     _t = time.time()
@@ -173,7 +213,6 @@ if __name__ == "__main__":
     np.save(os.path.join(output_folder, "{}_spectrograms.npy".format(basename)), all_call_spectrograms)
     np.save(os.path.join(output_folder, "{}_calls.npy".format(basename)), all_calls)
 
-
     print("""
 
     {} potential calls detected
@@ -187,7 +226,7 @@ if __name__ == "__main__":
 
     """.format(
         len(intervals),
-        os.path.join("..", output_folder, "{}_spectrograms.npy".format(basename)),
+        os.path.join("..", output_folder, "spectrograms.npy"),
         os.path.join("..", sys.argv[1]),
-        os.path.join("..", output_folder, "{}_intervals.npy".format(basename)),
+        os.path.join("..", output_folder, "intervals.npy"),
     ))

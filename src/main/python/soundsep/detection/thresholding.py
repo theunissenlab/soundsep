@@ -288,7 +288,8 @@ def split_individual_events(
 
 def threshold_all_events(
         audio_signal,
-        window_size=10.0
+        window_size=10.0,
+        channel=0,
     ):
     """Find intervals of potential vocalizations periods (in seconds)
 
@@ -316,12 +317,12 @@ def threshold_all_events(
         )
 
         threshold = compute_smart_threshold(
-            amp_env[:, 0],
+            amp_env[:, channel],
             sampling_rate=sampling_rate
         )
 
         intervals = threshold_events(
-            amp_env[:, 0],
+            amp_env[:, channel],
             threshold,
             sampling_rate=sampling_rate,
             ignore_width=0.05,
