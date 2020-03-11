@@ -380,10 +380,13 @@ class MainView(widgets.QWidget):
         self.bottomSplitter.addWidget(self.bottomLeftBox)
         self.bottomSplitter.addWidget(self.bottomRightBox)
 
+        self.topSplitter = widgets.QSplitter(Qt.Horizontal)
+        self.topSplitter.addWidget(self.topLeftBox)
+        self.topSplitter.addWidget(self.topRightBox)
+
         self.mainLayout = widgets.QGridLayout()
         self.mainLayout.addLayout(self.topBar, 0, 0)
-        self.mainLayout.addWidget(self.topLeftBox, 1, 0, 1, 2)
-        self.mainLayout.addWidget(self.topRightBox, 1, 2, 1, 4)
+        self.mainLayout.addWidget(self.topSplitter, 1, 0, 1, 6)
         self.mainLayout.addWidget(self.bottomSplitter, 2, 0, 1, 6)
 
         self.mainLayout.setRowStretch(1, 1)
