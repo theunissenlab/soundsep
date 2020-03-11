@@ -29,7 +29,7 @@ from audio_utils import get_amplitude_envelope
 from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
 
 
-ASYNC_FLAG = False
+MAX_RECENT_FILES = 5
 
 
 def _spec2icon(spec, dBNoise=40):
@@ -75,7 +75,7 @@ class Singleton():
 class AppData(Singleton):
     def __init__(self):
         Singleton.__init__(self)
-        self._data = {}
+        self.reset()
 
     def get(self, key):
         return self._data.get(key)
@@ -92,6 +92,9 @@ class AppData(Singleton):
 
     def clear(self, key):
         del self._data[key]
+
+    def reset(self):
+        self._data = {}
 
 
 class BackgroundEmbedding(QObject):
@@ -136,9 +139,21 @@ class App(widgets.QMainWindow):
 
         self.thread = None
 
+        if self.settings.value("OPEN_RECENT", []):
+            self.load_dir(self.settings.value("OPEN_RECENT")[-1])
+
     def init_actions(self):
-        self.open_directory_action = widgets.QAction("Open Wav Directory...", self)
+        self.open_directory_action = widgets.QAction("Open Directory", self)
         self.open_directory_action.triggered.connect(self.run_directory_loader)
+
+        self.open_recent_actions = []
+        for i in range(MAX_RECENT_FILES):
+            action = widgets.QAction("", self)
+            action.setVisible(False)
+            action.triggered.connect(self.load_dir)
+            self.open_recent_actions.append(action)
+        self.update_open_recent_actions()
+
         self.run_embedding_action = widgets.QAction("Run UMAP", self)
         self.run_embedding_action.triggered.connect(self.run_embedding)
         self.run_labeler_action = widgets.QAction("Run HDBSCAN Labeling", self)
@@ -148,6 +163,22 @@ class App(widgets.QMainWindow):
         self.save_labels_action = widgets.QAction("Save Labels", self)
         self.save_labels_action.triggered.connect(self.save_labels)
 
+    def update_open_recent_actions(self):
+        recently_opened = self.settings.value("OPEN_RECENT", [])
+        for i in range(MAX_RECENT_FILES):
+            if i < len(recently_opened):
+                self.open_recent_actions[i].setText(recently_opened[-i])
+                self.open_recent_actions[i].setData(recently_opened[-i])
+                self.open_recent_actions[i].setVisible(True)
+            else:
+                self.open_recent_actions[i].setText(None)
+                self.open_recent_actions[i].setData(None)
+                self.open_recent_actions[i].setVisible(False)
+        if not len(recently_opened):
+            self.openRecentMenu.setDisabled(True)
+        else:
+            self.openRecentMenu.setDisabled(False)
+
     def init_ui(self):
         self.setWindowTitle(self.title)
 
@@ -156,6 +187,9 @@ class App(widgets.QMainWindow):
 
         fileMenu = mainMenu.addMenu("&File")
         fileMenu.addAction(self.open_directory_action)
+        self.openRecentMenu = fileMenu.addMenu("&Open Recent")
+        for i in range(MAX_RECENT_FILES):
+            self.openRecentMenu.addAction(self.open_recent_actions[i])
         fileMenu.addSeparator()
         fileMenu.addAction(self.save_embedding_action)
         fileMenu.addAction(self.save_labels_action)
@@ -171,7 +205,7 @@ class App(widgets.QMainWindow):
         self.setCentralWidget(self.main_view)
         self.show()
 
-    def on_close(self):
+    def closeEvent(self):
         if self.thread:
             self.thread.terminate()
 
@@ -183,7 +217,7 @@ class App(widgets.QMainWindow):
         self.run_labeler_action.setDisabled(True)
         self.worker.finished.connect(self._on_embedding_completed)
 
-        if ASYNC_FLAG:
+        if self.settings.value("ASYNC_FLAG", False):
             self._reset_thread()
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.compute)
@@ -218,7 +252,10 @@ class App(widgets.QMainWindow):
 
         if not self.loaded_data.has("embedding"):
             self.run_embedding()
-            self.worker.finished.connect(self._run_labeler)
+            if self.settings.value("ASYNC_FLAG", False):
+                self.worker.finished.connect(self._run_labeler)
+            else:
+                self._run_labeler()
         else:
             self._run_labeler()
 
@@ -246,7 +283,7 @@ class App(widgets.QMainWindow):
         selected_file = widgets.QFileDialog.getExistingDirectory(
             self,
             "Load directory",
-            ".",
+            self.settings.value("OPEN_RECENT", ["."])[-1],
             options=options
         )
 
@@ -265,6 +302,21 @@ class App(widgets.QMainWindow):
     def load_dir(self, selected_file):
         if not os.path.isdir(selected_file):
             raise IOError("{} is not a directory".format(selected_file))
+
+        # Update the open recent menu item
+        open_recent = self.settings.value("OPEN_RECENT", [])
+        try:
+            idx = open_recent.index(selected_file)
+        except ValueError:
+            open_recent.append(selected_file)
+        else:
+            open_recent.pop(idx)
+            open_recent.append(selected_file)
+        open_recent = open_recent[-MAX_RECENT_FILES:]
+        self.settings.setValue("OPEN_RECENT", open_recent)
+        self.update_open_recent_actions()
+
+        self.loaded_data.reset()
 
         self.data_directory = os.path.join(selected_file, "outputs")
         wav_files = glob.glob(os.path.join(selected_file, "ch[0-9]*.wav"))
@@ -409,8 +461,6 @@ class Scatter2DView(widgets.QWidget):
         pen = pg.mkPen((200, 200, 250, 127))
         self.scatter = pg.ScatterPlotItem(pen=pen, symbol="o", size=1)
         self.plot.setLimits(xMin=None, xMax=None, yMin=None, yMax=None)
-        # self.scatter.hoverEvent = None
-        # self.scatter.mouseClickEvent = None
         self.plot.addItem(self.scatter)
         self.plot.plotItem.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("left")
@@ -424,11 +474,16 @@ class Scatter2DView(widgets.QWidget):
     def on_data_load(self, data):
         if not self.loaded_data.has("embedding"):
             self.setDisabled(True)
+            self.set_data(None)
         else:
             self._embedding = self.loaded_data.get("embedding")
             self.set_data(self._embedding)
 
     def set_data(self, embedding):
+        if embedding is None:
+            self.scatter.setData([])
+            return
+
         self.scatter.setData([
             {"pos": [x, y]} for x, y in embedding
         ])
@@ -725,7 +780,6 @@ class ClusterSelectView(widgets.QScrollArea):
         super().__init__(parent)
         self.init_ui()
         self.cluster_selected_signal = cluster_selected_signal
-        self._button_positions = {}
         data_loaded_signal.connect(self.on_data_load)
 
     def on_data_load(self, data):
@@ -745,6 +799,7 @@ class ClusterSelectView(widgets.QScrollArea):
         self.setWidgetResizable(True)
 
     def reset_buttons(self):
+        self._button_positions = {}
         for i in reversed(range(self.layout.count())):
             item = self.layout.itemAt(i)
             if item.widget():
@@ -772,7 +827,6 @@ class ClusterSelectView(widgets.QScrollArea):
             self._spectrograms[self._labels == label],
             np.where(self._labels == label)[0]
         )
-        row, col = self._button_positions.get(label)
 
         # Manual implementation of mutually exclusive radio buttons
         # - only leave selected the currently chosen button
@@ -797,7 +851,6 @@ class SnippetSelectView(widgets.QScrollArea):
                 snippet_selected_signal=None):
         super().__init__(parent)
         self._spectrograms = []
-        self._button_positions = {}
 
         self.init_ui()
 
