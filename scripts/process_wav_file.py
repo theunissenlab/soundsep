@@ -120,7 +120,7 @@ if __name__ == "__main__":
         sig = bandpass_filter(sig.T, audio_signal.sampling_rate, 1000, 8000).T
 
         inner_intervals = split_individual_events(
-            sig[:, 0],
+            sig[:, channel],
             audio_signal.sampling_rate,
             expected_call_max_duration=0.5,
             max_tries=10,

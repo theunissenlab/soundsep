@@ -766,6 +766,7 @@ class ClusterSelectView(widgets.QScrollArea):
             self.layout.addWidget(cluster_select, row, col, 1, 1)
 
     def _button_callback(self, label):
+        self._button_positions = {}
         self.cluster_selected_signal.emit(
             label,
             self._spectrograms[self._labels == label],
@@ -811,6 +812,7 @@ class SnippetSelectView(widgets.QScrollArea):
         self.setWidgetResizable(True)
 
     def reset_buttons(self):
+        self._button_positions = {}
         for i in reversed(range(self.layout.count())):
             item = self.layout.itemAt(i)
             if item.widget():
