@@ -96,7 +96,7 @@ def compute_smart_threshold(amp_env, sampling_rate=30000.0, z=3):
 
     # I found that 1/20th of a second seems to work; not sure if this
     # will always be true...
-    dsamp = int(sampling_rate / 10.0)
+    dsamp = int(sampling_rate / 30.0)
 
     windows = []
     window_below_zero = []
@@ -290,6 +290,12 @@ def threshold_all_events(
         audio_signal,
         window_size=10.0,
         channel=0,
+        t_start=None,
+        t_stop=None,
+        ignore_width=0.05,
+        min_size=0.05,
+        fuse_duration=0.5,
+        threshold_z=3.0
     ):
     """Find intervals of potential vocalizations periods (in seconds)
 
@@ -298,9 +304,24 @@ def threshold_all_events(
     """
     sampling_rate = audio_signal.sampling_rate
     signal_duration = len(audio_signal) / sampling_rate
-    window_starts = np.arange(0, signal_duration - window_size, window_size)
-    window_stops = window_starts + window_size
-    window_stops[-1] = signal_duration
+    if window_size is None:
+        window_starts = np.array([0.0 if t_start is None else t_start])
+        window_stops = np.array([audio_signal.t_max if t_stop is None else t_stop])
+
+    else:
+        window_starts = np.arange(0, signal_duration - window_size, window_size)
+        window_stops = window_starts + window_size
+        window_stops[-1] = signal_duration
+
+        if t_start:
+            mask = window_starts >= t_start
+        else:
+            mask = np.ones_like(window_starts).astype(np.bool)
+        if t_stop:
+            mask = mask.astype(np.bool) & (window_stops <= t_stop)
+
+        window_starts = window_starts[mask]
+        window_stops = window_stops[mask]
 
     last_interval_to_check = None
     all_intervals = []
@@ -318,16 +339,17 @@ def threshold_all_events(
 
         threshold = compute_smart_threshold(
             amp_env[:, channel],
-            sampling_rate=sampling_rate
+            sampling_rate=sampling_rate,
+            z=threshold_z
         )
 
         intervals = threshold_events(
             amp_env[:, channel],
             threshold,
             sampling_rate=sampling_rate,
-            ignore_width=0.05,
-            min_size=0.05,
-            fuse_duration=0.5
+            ignore_width=ignore_width,
+            min_size=min_size,
+            fuse_duration=fuse_duration
         )
 
         # Here begins the code that merges intervals across windows

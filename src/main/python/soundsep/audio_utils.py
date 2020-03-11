@@ -3,12 +3,18 @@ import numpy as np
 from soundsig.signal import lowpass_filter, highpass_filter
 
 
-def get_amplitude_envelope(data, fs=30000.0, lowpass=5000.0, highpass=2000.0):
+def get_amplitude_envelope(
+            data,
+            fs=30000.0,
+            lowpass=8000.0,
+            highpass=2000.0,
+            rectify_lowpass=600.0,
+        ):
     filtered = highpass_filter(data.T, fs, highpass).T
-
     # Rectify and lowpass filter
     filtered = np.abs(lowpass_filter(filtered.T, fs, lowpass).T)
-    filtered = lowpass_filter(filtered.T, fs, 100).T
+    filtered = lowpass_filter(filtered.T, fs, rectify_lowpass).T
+    # filtered = highpass_filter(filtered.T, fs, 0.1).T
 
     return filtered
 
