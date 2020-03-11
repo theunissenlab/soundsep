@@ -26,6 +26,7 @@ from soundsig.sound import spectrogram
 from soundsig.signal import bandpass_filter
 
 from audio_utils import get_amplitude_envelope
+from detection.thresholding import threshold_all_events
 from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
 
 
@@ -109,10 +110,131 @@ class BackgroundEmbedding(QObject):
     def compute(self):
         points = self.data.reshape(len(self.data), -1)
         points = PCA(n_components=20, whiten=True).fit_transform(points)
+        self.finished.emit(points[:, :2])
+        return
         embedding = umap.UMAP(
-            n_neighbors=10, repulsion_strength=100.0, min_dist=0.9
+            n_neighbors=10, repulsion_strength=10.0, min_dist=0.9
         ).fit_transform(points)
         self.finished.emit(embedding)
+
+
+def read_settings_dict(settings, heading, key_descriptions):
+    """Read nested settings under one heading
+
+    Tries to cast any bools to bool and numbers to float
+    """
+    casting_fns = dict(
+        (v[0], v[3]) for v in key_descriptions
+    )
+
+    result = {}
+    for key in settings.allKeys():
+        if key.startswith("{}/".format(heading)):
+            key_rest = key[len(heading) + 1:]
+            casting_fn = casting_fns[key_rest]
+            try:
+                if isinstance(casting_fn, type):
+                    val = settings.value(key, type=casting_fn)
+                else:
+                    val = casting_fn(settings.value(key))
+            except:
+                raise
+            else:
+                result[key_rest] = val
+
+    return result
+
+
+class BasePreferencesWindow(gui.QDialog):
+    # This is a list of 4-tuples
+    # Key, key description, default value, casting fn
+    key_descriptions = []
+    heading = None
+    submitted = pyqtSignal()
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent=parent)
+        self.settings = settings
+        self.init_ui()
+
+    def init_ui(self):
+        # self.mainWidget = widgets.QWidget()
+        self.mainLayout = widgets.QGridLayout()
+        self.fields = {}
+
+        current_settings = read_settings_dict(
+            self.settings,
+            self.heading,
+            self.key_descriptions
+        )
+        for row, (key, description, default, _) in enumerate(self.key_descriptions):
+            label = widgets.QLabel(self, text=description)
+            field = widgets.QLineEdit(self, text=str(current_settings.get(key, default)))
+            self.mainLayout.addWidget(label, row, 0)
+            self.mainLayout.addWidget(field, row, 1)
+            self.fields[key] = field
+
+        restore_defaults_button = widgets.QPushButton("Restore Defaults")
+        self.mainLayout.addWidget(restore_defaults_button, row + 1, 0)
+        restore_defaults_button.clicked.connect(self.restore_defaults)
+
+        submit_button = widgets.QPushButton("Submit")
+        self.mainLayout.addWidget(submit_button, row + 1, 1)
+        submit_button.clicked.connect(self.submit)
+
+        self.setLayout(self.mainLayout)
+        self.setMaximumWidth(self.width())
+        self.setMaximumHeight(self.height())
+
+    def validate(self, kwargs):
+        return True
+
+    def submit(self):
+        to_submit = {}
+        for key, field in self.fields.items():
+            to_submit[key] = field.text()
+
+        if self.validate(to_submit):
+            for (key, _, _, casting_fn) in self.key_descriptions:
+                full_key = "/".join([self.heading, key])
+                val = to_submit[key]
+                val = casting_fn(val)
+                self.settings.setValue(full_key, val)
+            self.submitted.emit()
+            self.close()
+        else:
+            widgets.QMessageBox.warning(
+                self,
+                "Error",
+                "Validation failed.",
+            )
+
+    def restore_defaults(self):
+        for (key, _, default, _) in self.key_descriptions:
+            self.fields[key].setText(str(default))
+
+
+class AmpEnvPreferencesWindow(BasePreferencesWindow):
+    key_descriptions = [
+        ("lowpass", "Lowpass Cutoff (Hz)", 8000.0, float),
+        ("highpass", "Highpass Cutoff (Hz)", 2000.0, float),
+        ("rectify_lowpass", "Rectified Cutoff Lowpass (Hz)", 600.0, float),
+    ]
+    heading = "AMP_ENV_ARGS"
+
+    def validate(self, kwargs):
+        for key, val in kwargs.items():
+            try:
+                float(val)
+            except:
+                return False
+            else:
+                pass
+
+        if float(kwargs["highpass"]) > float(kwargs["lowpass"]):
+            return False
+
+        return True
 
 
 class App(widgets.QMainWindow):
@@ -120,6 +242,8 @@ class App(widgets.QMainWindow):
     """
     # Dictionary of data with keys wav, intervals, spectrograms, labels
     signalLoadedData = pyqtSignal(object)
+
+    redrawSignal = pyqtSignal()
 
     # Cluster label, array of spectrograms, array of indices into original data
     clusterSelected = pyqtSignal(int, object, object)
@@ -132,6 +256,9 @@ class App(widgets.QMainWindow):
         self.title = "SoundSep"
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
         self.loaded_data = AppData()
+
+        self.amp_env_pref_window = AmpEnvPreferencesWindow(self.settings, parent=self)
+        self.amp_env_pref_window.submitted.connect(self.redrawSignal.emit)
 
         self.init_ui()
         self.init_actions()
@@ -162,6 +289,22 @@ class App(widgets.QMainWindow):
         self.save_embedding_action.triggered.connect(self.save_embedding)
         self.save_labels_action = widgets.QAction("Save Labels", self)
         self.save_labels_action.triggered.connect(self.save_labels)
+
+        self.toggle_amp_norm_action = widgets.QAction("Normalize Amplitude Envelope", self)
+        self.toggle_amp_norm_action.setCheckable(True)
+        self.toggle_amp_norm_action.setData(self.settings.value("AMP_NORM", False, type=bool))
+        self.toggle_amp_norm_action.triggered.connect(self._toggle_amp_norm)
+
+        self.show_pref_action = widgets.QAction("Amplitude Envelope Parameters", self)
+        self.show_pref_action.triggered.connect(self.amp_env_pref_window.show)
+
+        self.detect_all_calls_action = widgets.QAction("Detect All Calls", self)
+        self.detect_calls_in_window_action = widgets.QAction("Detect Calls in Window", self)
+        self.detect_calls_in_window_action.triggered.connect(self.run_detection)
+
+    def _toggle_amp_norm(self, val):
+        self.settings.setValue("AMP_NORM", val)
+        self.redrawSignal.emit()
 
     def update_open_recent_actions(self):
         recently_opened = self.settings.value("OPEN_RECENT", [])
@@ -194,10 +337,19 @@ class App(widgets.QMainWindow):
         fileMenu.addAction(self.save_embedding_action)
         fileMenu.addAction(self.save_labels_action)
 
+        viewMenu = mainMenu.addMenu("&View")
+        soundMenu = viewMenu.addMenu("&Sound Display")
+        soundMenu.addAction(self.toggle_amp_norm_action)
+
+        settingsMenu = mainMenu.addMenu("&Settings")
+        settingsMenu.addAction(self.show_pref_action)
+
         analysisMenu = mainMenu.addMenu("&Analysis")
         analysisMenu.addAction(self.run_embedding_action)
         analysisMenu.addAction(self.run_labeler_action)
-
+        analysisMenu.addSeparator()
+        analysisMenu.addAction(self.detect_calls_in_window_action)
+        analysisMenu.addAction(self.detect_all_calls_action)
         self.display_viewer()
 
     def display_viewer(self):
@@ -217,7 +369,7 @@ class App(widgets.QMainWindow):
         self.run_labeler_action.setDisabled(True)
         self.worker.finished.connect(self._on_embedding_completed)
 
-        if self.settings.value("ASYNC_FLAG", False):
+        if self.settings.value("ASYNC_FLAG", False, type=bool):
             self._reset_thread()
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.compute)
@@ -252,7 +404,7 @@ class App(widgets.QMainWindow):
 
         if not self.loaded_data.has("embedding"):
             self.run_embedding()
-            if self.settings.value("ASYNC_FLAG", False):
+            if self.settings.value("ASYNC_FLAG", False, type=bool):
                 self.worker.finished.connect(self._run_labeler)
             else:
                 self._run_labeler()
@@ -288,16 +440,37 @@ class App(widgets.QMainWindow):
         )
 
         if selected_file:
-            self.settings.setValue("file/wavfile", selected_file)
             self.load_dir(selected_file)
 
     def save_embedding(self):
         if self.loaded_data.has("embedding"):
             np.save(self.embedding_file, self.loaded_data.get("embedding"))
+            widgets.QMessageBox.about(
+                self,
+                "Saved",
+                "Embedding saved successfully.",
+            )
+        else:
+            widgets.QMessageBox.warning(
+                self,
+                "Error",
+                "No embedding loaded.",
+            )
 
     def save_labels(self):
         if self.loaded_data.has("labels"):
             np.save(self.labels_file, self.loaded_data.get("labels"))
+            widgets.QMessageBox.about(
+                self,
+                "Saved",
+                "Labels saved successfully.",
+            )
+        else:
+            widgets.QMessageBox.warning(
+                self,
+                "Error",
+                "No labels found.",
+            )
 
     def load_dir(self, selected_file):
         if not os.path.isdir(selected_file):
@@ -316,7 +489,10 @@ class App(widgets.QMainWindow):
         self.settings.setValue("OPEN_RECENT", open_recent)
         self.update_open_recent_actions()
 
+        # Reset the loaded data and view position
         self.loaded_data.reset()
+        self.loaded_data.set("view_ch", 0)
+        self.loaded_data.set("current_step", 0)
 
         self.data_directory = os.path.join(selected_file, "outputs")
         wav_files = glob.glob(os.path.join(selected_file, "ch[0-9]*.wav"))
@@ -349,6 +525,25 @@ class App(widgets.QMainWindow):
             self.loaded_data.set("labels", np.load(self.labels_file)[()])
         self.loaded_data.set("loaded_dir", selected_file)
         self.signalLoadedData.emit(self.loaded_data)
+
+    def run_detection(self):
+        current_step = self.loaded_data.get("current_step")
+        t0 = current_step * (3.0 / 10.0)  # THIS IS t_step: spec_sample_rate / 10
+        t1 = t0 + self.settings.value("AUDIO_VIEW/window_size", 3.0)
+        events = threshold_all_events(
+            self.loaded_data.get("wav"),
+            window_size=None,
+            channel=self.loaded_data.get("view_ch"),
+            t_start=t0,
+            t_stop=t1,
+            ignore_width=0.001,
+            min_size=0.001,
+            fuse_duration=0.02,
+            threshold_z=2.0,
+
+        )
+        self.loaded_data.set("temporary_intervals", np.array(events))
+        self.redrawSignal.emit()
 
 
 class MainView(widgets.QWidget):
@@ -409,7 +604,8 @@ class MainView(widgets.QWidget):
         self.spectrogram_widget = AudioView(
             None,
             data_loaded_signal=self.parent().signalLoadedData,
-            snippet_selected_signal=self.parent().snippetSelected
+            snippet_selected_signal=self.parent().snippetSelected,
+            redraw_signal=self.parent().redrawSignal,
         )
 
         self.cluster_select_widget = ClusterSelectView(
@@ -461,7 +657,7 @@ class Scatter2DView(widgets.QWidget):
 
     def init_ui(self):
         self.plot = pg.PlotWidget()
-        pen = pg.mkPen((200, 200, 250, 127))
+        pen = pg.mkPen((255, 255, 255, 255))
         self.scatter = pg.ScatterPlotItem(pen=pen, symbol="o", size=1)
         self.plot.setLimits(xMin=None, xMax=None, yMin=None, yMax=None)
         self.plot.addItem(self.scatter)
@@ -518,15 +714,22 @@ class AudioView(widgets.QWidget):
     spec_freq_spacing = 50
     min_freq = 250
     max_freq = 8000
+    line_playback_step = 10
 
-    def __init__(self, parent=None, data_loaded_signal=None,
-            snippet_selected_signal=None):
+    updateViewSignal = pyqtSignal()
+
+    def __init__(
+            self,
+            parent=None,
+            data_loaded_signal=None,
+            snippet_selected_signal=None,
+            redraw_signal=None
+        ):
         super().__init__(parent)
-        self.init_ui()
         self.loaded_data = AppData()
 
-        self.view_ch = 0
-        self.current_step = 0
+        self.init_ui()
+        self.settings = QSettings("Theuniseen Lab", "Sound Separation")
 
         # Set up playback line
         self.timer = QTimer(self)
@@ -535,9 +738,10 @@ class AudioView(widgets.QWidget):
 
         data_loaded_signal.connect(self.on_data_load)
         snippet_selected_signal.connect(self.on_snippet_selected)
+        redraw_signal.connect(self.update_image)
 
     def _set_channel(self, ch):
-        self.view_ch = ch
+        self.loaded_data.set("view_ch", ch)
         self.update_image()
 
     def _set_n_channels(self, n):
@@ -557,7 +761,7 @@ class AudioView(widgets.QWidget):
             self.channelSelectLayout.addWidget(button)
             if i == 0:
                 # Have channel 0 checked by default
-                self.view_ch = 0
+                self.loaded_data.set("view_ch", 0)
                 button.setChecked(True)
 
         # Adds a spacer to keep all items left aligned
@@ -570,8 +774,8 @@ class AudioView(widgets.QWidget):
     def play_audio(self):
         """Play the sound thats in the currently selected window"""
         self.reset_playback_line()
-        sd.play(self._sig[:, self.view_ch], self._loaded_wav.sampling_rate, blocking=False)
-        self.timer.start(10000 / self.spec_sample_rate)
+        sd.play(self._sig[:, self.loaded_data.get("view_ch")], self._loaded_wav.sampling_rate, blocking=False)
+        self.timer.start(self.line_playback_step * 1000 / self.spec_sample_rate)
 
     def reset_playback_line(self):
         self.timer.stop()
@@ -586,7 +790,7 @@ class AudioView(widgets.QWidget):
         """
         max_playback_line_pos = int(self.win_size * self.spec_sample_rate)
         if self._playback_line_pos < max_playback_line_pos:
-            self._playback_line_pos += 10
+            self._playback_line_pos += self.line_playback_step
             self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
             self.amplitude_plot.playback_line.setValue(self._playback_line_pos)
         else:
@@ -606,12 +810,13 @@ class AudioView(widgets.QWidget):
         self.spectrogram_plot.addItem(self.spectrogram_plot.snippet_line_stop)
         self.spectrogram_plot.hideAxis("left")
         self.spectrogram_plot.hideAxis("bottom")
-        self.spectrogram_plot.setLimits(
-            xMin=0,
-            xMax=int(self.win_size * self.spec_sample_rate),
-            yMin=0,
-            yMax=int((self.max_freq - self.min_freq) / self.spec_freq_spacing)
+        self.spectrogram_plot.getViewBox().setRange(
+            xRange=(0, int(self.win_size * self.spec_sample_rate)),
+            yRange=(0, int((self.max_freq - self.min_freq) / self.spec_freq_spacing)),
+            padding=0,
+            disableAutoRange=True
         )
+        self._drawn_intervals = []
 
         ### Amplitude Plot
         # The amplitude plot will use the same sampling rate as the spectrograms
@@ -626,11 +831,11 @@ class AudioView(widgets.QWidget):
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_stop)
         self.amplitude_plot.hideAxis("left")
         self.amplitude_plot.hideAxis("bottom")
-        self.amplitude_plot.setLimits(
-            xMin=0,
-            xMax=int(self.win_size * self.spec_sample_rate),
-            yMin=0,
-            yMax=1
+        self.amplitude_plot.getViewBox().setRange(
+            xRange=(0, int(self.win_size * self.spec_sample_rate)),
+            yRange=(0, 1),
+            padding=0,
+            disableAutoRange=True
         )
 
         # Put the plots in a tab widget
@@ -664,7 +869,7 @@ class AudioView(widgets.QWidget):
     def on_data_load(self, data):
         self._loaded_wav = self.loaded_data.get("wav")
         self._loaded_intervals = self.loaded_data.get("intervals")
-        self.update_scroll_bar()
+        self._update_scroll_bar()
         self.change_range(0)
         self._set_n_channels(self._loaded_wav.n_channels)
 
@@ -683,7 +888,7 @@ class AudioView(widgets.QWidget):
         self.amplitude_plot.snippet_line_start.setValue(line_pos_start)
         self.amplitude_plot.snippet_line_stop.setValue(line_pos_stop)
 
-    def update_scroll_bar(self):
+    def _update_scroll_bar(self):
         """Set scrollbar params to match current audio file length and window size"""
         # Set the scrollbar values
         t_last = self._loaded_wav.t_max - self.win_size
@@ -703,14 +908,16 @@ class AudioView(widgets.QWidget):
         self.spectrogram_plot.snippet_line_stop.setValue(-1)
         self.amplitude_plot.snippet_line_start.setValue(-1)
         self.amplitude_plot.snippet_line_stop.setValue(-1)
-        self.current_step = new_value
+        self.loaded_data.set("current_step", new_value)
         self.scrollbar.setValue(new_value)
         self.update_image()
-        self.update_time_label()
+        self._update_time_label()
 
     def update_image(self):
-        t1 = self.t_step * self.current_step
+        t1 = self.t_step * self.loaded_data.get("current_step")
+
         t2 = t1 + self.win_size
+        t2 = min(t2, self._loaded_wav.t_max)
 
         t_arr, sig = self._loaded_wav.time_slice(t1, t2)
         sig -= np.mean(sig, axis=0)
@@ -721,10 +928,63 @@ class AudioView(widgets.QWidget):
         self._update_image_spectrogram(sig)
         self._update_image_amplitude(sig)
 
+        self._draw_intervals()
+
+    def _draw_intervals(self):
+        """Draws rectangles illustrating the intervals in the visible window
+        """
+        for rect in self._drawn_intervals:
+            self.spectrogram_plot.removeItem(rect)
+            self.amplitude_plot.removeItem(rect)
+
+        self._drawn_intervals = []
+
+        t1 = self.t_step * self.loaded_data.get("current_step")
+        t2 = t1 + self.win_size
+
+        # first find all intervals that either
+        #  > end after t1 and before t2 OR
+        #  > start after t1 and before t2
+        start_idx = np.searchsorted(self._loaded_intervals[:, 0], t1)
+        for interval_t1, interval_t2 in self._loaded_intervals[start_idx:]:
+            if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
+                for plot in [self.spectrogram_plot, self.amplitude_plot]:
+                    viewbox = plot.getPlotItem().getViewBox()
+                    _, pixel_size = viewbox.viewPixelSize()
+                    ((_, _), (_, ymax)) = viewbox.viewRange()
+                    rect = gui.QGraphicsRectItem(
+                        (interval_t1 - t1) * self.spec_sample_rate,
+                        ymax - 2.5 * pixel_size,
+                        (interval_t2 - interval_t1) * self.spec_sample_rate,
+                        5 * pixel_size)
+                    rect.setPen(pg.mkPen(None))
+                    rect.setBrush(pg.mkBrush("r"))
+                    plot.addItem(rect)
+                    self._drawn_intervals.append(rect)
+
+        temporary_intervals = self.loaded_data.get("temporary_intervals")
+        if temporary_intervals is not None and len(temporary_intervals):
+            start_idx = np.searchsorted(temporary_intervals[:, 0], t1)
+            for interval_t1, interval_t2 in temporary_intervals[start_idx:]:
+                if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
+                    for plot in [self.spectrogram_plot, self.amplitude_plot]:
+                        viewbox = plot.getPlotItem().getViewBox()
+                        _, pixel_size = viewbox.viewPixelSize()
+                        ((_, _), (_, ymax)) = viewbox.viewRange()
+                        rect = gui.QGraphicsRectItem(
+                            (interval_t1 - t1) * self.spec_sample_rate,
+                            ymax - 18.5 * pixel_size,
+                            (interval_t2 - interval_t1) * self.spec_sample_rate,
+                            10 * pixel_size)
+                        rect.setPen(pg.mkPen(None))
+                        rect.setBrush(pg.mkBrush("g"))
+                        plot.addItem(rect)
+                        self._drawn_intervals.append(rect)
+
     def _update_image_spectrogram(self, sig):
         self._sig = sig
         t_spec, f_spec, spec, _ = spectrogram(
-            sig[:, self.view_ch],
+            sig[:, self.loaded_data.get("view_ch")],
             self._loaded_wav.sampling_rate,
             spec_sample_rate=self.spec_sample_rate,
             freq_spacing=self.spec_freq_spacing,
@@ -738,22 +998,40 @@ class AudioView(widgets.QWidget):
         logspec[logspec < min_b] = min_b
 
         self.image.setImage(logspec.T)
+        viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
 
     def _update_image_amplitude(self, sig):
         highlighter_pen = pg.mkPen((29, 224, 32, 255))
-        bg_pen = pg.mkPen((204, 204, 204, 127))
+        bg_pen = pg.mkPen((204, 204, 204, 63))
 
+        amp_env_max = 0
         for ch in range(sig.shape[1]):
-            amp_env = get_amplitude_envelope(sig[:, ch])
+            amp_env_settings = read_settings_dict(
+                self.settings,
+                AmpEnvPreferencesWindow.heading,
+                AmpEnvPreferencesWindow.key_descriptions
+            )
+            amp_env = get_amplitude_envelope(
+                sig[:, ch],
+                fs=self._loaded_wav.sampling_rate,
+                lowpass=amp_env_settings.get("lowpass", 8000.0),
+                highpass=amp_env_settings.get("highpass", 2000.0),
+                rectify_lowpass=amp_env_settings.get("rectify_lowpass", 600.0)
+            )
             # Downsample amp_env to spectrogram sampling rate
             downsample_to_n_samples = int(self.win_size * self.spec_sample_rate)
             amp_env = scipy.signal.resample(amp_env, downsample_to_n_samples)
+
+            if self.settings.value("AMP_NORM", False, type=bool):
+                amp_env = amp_env / np.max(amp_env)
+
             self.amplitude_plot.plot(
                 list(np.arange(len(amp_env))),
                 list(amp_env),
                 clear=True if ch == 0 else False,
-                pen=highlighter_pen if ch == self.view_ch else bg_pen
+                pen=highlighter_pen if ch == self.loaded_data.get("view_ch") else bg_pen
             )
+            amp_env_max = max(np.max(amp_env), amp_env_max)
 
         # Need to add the overlaied lines again since they were cleared by
         # the plot function above.
@@ -761,15 +1039,13 @@ class AudioView(widgets.QWidget):
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_start)
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_stop)
 
-        self.amplitude_plot.setLimits(
-            xMin=0,
-            xMax=len(amp_env),
-            yMin=0,
-            yMax=np.max(sig)
+        self.amplitude_plot.getViewBox().setRange(
+            xRange=(0, len(amp_env)),
+            yRange=(0, amp_env_max)
         )
 
-    def update_time_label(self):
-        t1 = self.t_step * self.current_step
+    def _update_time_label(self):
+        t1 = self.t_step * self.loaded_data.get("current_step")
         t2 = t1 + self.win_size
         self.time_label.setText("{:.2f}s - {:.2f}s".format(t1, t2))
 

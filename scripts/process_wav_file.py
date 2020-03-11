@@ -8,6 +8,7 @@ import sys
 sys.path.append("code/soundsep")
 
 import argparse
+import glob
 import os
 import textwrap
 import time
@@ -44,6 +45,8 @@ parser.add_argument("location", type=str,
     help="Path to wav file or folder containing wav files")
 parser.add_argument("-c", "--channel", type=int, default=0,
     help="Channel index to threshold on")
+parser.add_argument("--canary", action="store_true",
+    help="Canary Flag")
 
 
 if __name__ == "__main__":
@@ -92,6 +95,9 @@ if __name__ == "__main__":
                 os.path.join("..", output_folder, "intervals.npy".format(basename)),
             ))
             sys.exit(0)
+        else:
+            for f in glob.glob(os.path.join(output_folder, "*.npy")):
+                os.remove(f)
 
     if mode == "dir":
         audio_signal = LazyMultiWavInterface.create_from_directory(dirname)
@@ -101,57 +107,76 @@ if __name__ == "__main__":
     # Initial thresholding
     _t = time.time()
     print("Thresholding data...")
-    all_intervals = threshold_all_events(audio_signal, window_size=10.0)
+    if args.canary:
+        all_intervals = threshold_all_events(
+            audio_signal,
+            channel=channel,
+            window_size=3.0,
+            ignore_width=0.005,
+            min_size=0.005,
+            fuse_duration=0.02,
+            threshold_z=2.0,
+        )
+    else:
+        all_intervals = threshold_all_events(
+            audio_signal,
+            channel=channel,
+            window_size=10.0,
+        )
+
     print("Detected intervals in {:.2f}s file in {:.2f}s".format(
         len(audio_signal) / audio_signal.sampling_rate,
         time.time() - _t
     ))
 
-    # Split into smaller intervals
-    print("Splitting {} intervals into smaller intervals".format(len(all_intervals)))
-    _t = time.time()
-    intervals = []
-    for idx, (t1, t2) in enumerate(all_intervals):
-        padding = 1.0
-        if t1 - padding < 0 or t2 + padding > int(len(audio_signal) / audio_signal.sampling_rate):
-            continue
-        t_arr, sig = audio_signal.time_slice(t1 - padding, t2 + padding)
-        sig = sig - np.mean(sig, axis=0)
-        sig = bandpass_filter(sig.T, audio_signal.sampling_rate, 1000, 8000).T
+    if not args.canary:
+        # Split into smaller intervals
+        print("Splitting {} intervals into smaller intervals".format(len(all_intervals)))
+        _t = time.time()
+        intervals = []
+        for idx, (t1, t2) in enumerate(all_intervals):
+            padding = 1.0
+            if t1 - padding < 0 or t2 + padding > int(len(audio_signal) / audio_signal.sampling_rate):
+                continue
+            t_arr, sig = audio_signal.time_slice(t1 - padding, t2 + padding)
+            sig = sig - np.mean(sig, axis=0)
+            sig = bandpass_filter(sig.T, audio_signal.sampling_rate, 1000, 8000).T
 
-        inner_intervals = split_individual_events(
-            sig[:, channel],
-            audio_signal.sampling_rate,
-            expected_call_max_duration=0.5,
-            max_tries=10,
-            scale_factor=1.25,
-        )
+            inner_intervals = split_individual_events(
+                sig[:, channel],
+                audio_signal.sampling_rate,
+                expected_call_max_duration=0.1 if args.canary else 0.5,
+                max_tries=10,
+                scale_factor=1.25,
+            )
 
-        # since we padded the signal above, we need to be careful
-        # about not accidentally adding intervals outside our original t1 -> t2
-        # slice (they might belong to another detection window)
-        for idx1, idx2 in inner_intervals:
-            if (idx1 / audio_signal.sampling_rate) < padding:
-                if (idx2 / audio_signal.sampling_rate) < padding:
-                    continue
-                else:
-                    intervals.append((
-                        t1,
-                        t1 - padding + (idx2 / audio_signal.sampling_rate)
-                    ))
-            elif t1 - padding + (idx2 / audio_signal.sampling_rate) > t2:
-                if t1 - padding + (idx1 / audio_signal.sampling_rate) > t2:
-                    continue
+            # since we padded the signal above, we need to be careful
+            # about not accidentally adding intervals outside our original t1 -> t2
+            # slice (they might belong to another detection window)
+            for idx1, idx2 in inner_intervals:
+                if (idx1 / audio_signal.sampling_rate) < padding:
+                    if (idx2 / audio_signal.sampling_rate) < padding:
+                        continue
+                    else:
+                        intervals.append((
+                            t1,
+                            t1 - padding + (idx2 / audio_signal.sampling_rate)
+                        ))
+                elif t1 - padding + (idx2 / audio_signal.sampling_rate) > t2:
+                    if t1 - padding + (idx1 / audio_signal.sampling_rate) > t2:
+                        continue
+                    else:
+                        intervals.append((
+                            t1 - padding + (idx1 / audio_signal.sampling_rate),
+                            t2
+                        ))
                 else:
                     intervals.append((
                         t1 - padding + (idx1 / audio_signal.sampling_rate),
-                        t2
+                        t1 - padding + (idx2 / audio_signal.sampling_rate)
                     ))
-            else:
-                intervals.append((
-                    t1 - padding + (idx1 / audio_signal.sampling_rate),
-                    t1 - padding + (idx2 / audio_signal.sampling_rate)
-                ))
+    else:
+        intervals = all_intervals
 
     print("Split intervals in {:.2f}s file in {:.2f}s".format(
         len(audio_signal) / audio_signal.sampling_rate,
@@ -173,7 +198,10 @@ if __name__ == "__main__":
 
         # Recentered signal with a small buffer of 40ms on either side
         buffer = 0.01
-        t_arr, sig = audio_signal.time_slice(t1 - buffer, t2 + buffer)
+        t_arr, sig = audio_signal.time_slice(
+            max(0, t1 - buffer),
+            min(audio_signal.t_max, t2 + buffer)
+        )
         sig = sig - np.mean(sig, axis=0)
         sig = bandpass_filter(sig.T, audio_signal.sampling_rate, 1000, 8000).T
 
@@ -184,8 +212,11 @@ if __name__ == "__main__":
         center_of_mass = t1 - buffer + np.sum((t_arr * np.sum(amp_env, axis=1))) / np.sum(amp_env)
 
         # Recentered signal with a small buffer of 40ms on either side
-        buffer = 0.04
-        t_arr, sig = audio_signal.time_slice(center_of_mass - buffer, center_of_mass + buffer)
+        buffer = 0.08
+        t_arr, sig = audio_signal.time_slice(
+            max(0, center_of_mass - buffer),
+            min(audio_signal.t_max, center_of_mass + buffer)
+        )
         sig = sig - np.mean(sig, axis=0)
         sig = bandpass_filter(sig.T, audio_signal.sampling_rate, 1000, 8000).T
 
