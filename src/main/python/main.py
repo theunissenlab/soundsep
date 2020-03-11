@@ -133,9 +133,10 @@ class App(widgets.QMainWindow):
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
         self.loaded_data = AppData()
 
-        self.init_actions()
         self.init_ui()
+        self.init_actions()
         self.init_menus()
+        self.update_open_recent_actions()
 
         self.thread = None
 
@@ -152,7 +153,6 @@ class App(widgets.QMainWindow):
             action.setVisible(False)
             action.triggered.connect(self.load_dir)
             self.open_recent_actions.append(action)
-        self.update_open_recent_actions()
 
         self.run_embedding_action = widgets.QAction("Run UMAP", self)
         self.run_embedding_action.triggered.connect(self.run_embedding)
@@ -205,7 +205,7 @@ class App(widgets.QMainWindow):
         self.setCentralWidget(self.main_view)
         self.show()
 
-    def closeEvent(self):
+    def closeEvent(self, evt):
         if self.thread:
             self.thread.terminate()
 
@@ -568,7 +568,7 @@ class AudioView(widgets.QWidget):
         """Play the sound thats in the currently selected window"""
         self.reset_playback_line()
         sd.play(self._sig[:, self.view_ch], self._loaded_wav.sampling_rate, blocking=False)
-        self.timer.start(1000 / self.spec_sample_rate)
+        self.timer.start(10000 / self.spec_sample_rate)
 
     def reset_playback_line(self):
         self.timer.stop()
@@ -583,7 +583,7 @@ class AudioView(widgets.QWidget):
         """
         max_playback_line_pos = int(self.win_size * self.spec_sample_rate)
         if self._playback_line_pos < max_playback_line_pos:
-            self._playback_line_pos += 1
+            self._playback_line_pos += 10
             self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
             self.amplitude_plot.playback_line.setValue(self._playback_line_pos)
         else:
