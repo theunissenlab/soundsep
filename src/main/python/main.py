@@ -167,12 +167,18 @@ class BasePreferencesWindow(gui.QDialog):
             self.heading,
             self.key_descriptions
         )
-        for row, (key, description, default, _) in enumerate(self.key_descriptions):
+        for row, (key, description, default, _, choices) in enumerate(self.key_descriptions):
             label = widgets.QLabel(self, text=description)
-            field = widgets.QLineEdit(self, text=str(current_settings.get(key, default)))
+            if choices is None:
+                field = widgets.QLineEdit(self, text=str(current_settings.get(key, default)))
+            else:
+                field = widgets.QComboBox(self)
+                for choice in choices:
+                    field.addItem(choice)
+                field.setCurrentIndex(default)
             self.mainLayout.addWidget(label, row, 0)
             self.mainLayout.addWidget(field, row, 1)
-            self.fields[key] = field
+            self.fields[key] = (field, choices)
 
         restore_defaults_button = widgets.QPushButton("Restore Defaults")
         self.mainLayout.addWidget(restore_defaults_button, row + 1, 0)
@@ -191,11 +197,14 @@ class BasePreferencesWindow(gui.QDialog):
 
     def submit(self):
         to_submit = {}
-        for key, field in self.fields.items():
-            to_submit[key] = field.text()
+        for key, (field, choices) in self.fields.items():
+            if isinstance(field, widgets.QLineEdit):
+                to_submit[key] = field.text()
+            elif isinstance(field, widgets.QComboBox):
+                to_submit[key] = choices[field.currentIndex()]
 
         if self.validate(to_submit):
-            for (key, _, _, casting_fn) in self.key_descriptions:
+            for (key, _, _, casting_fn, _) in self.key_descriptions:
                 full_key = "/".join([self.heading, key])
                 val = to_submit[key]
                 val = casting_fn(val)
@@ -210,20 +219,31 @@ class BasePreferencesWindow(gui.QDialog):
             )
 
     def restore_defaults(self):
-        for (key, _, default, _) in self.key_descriptions:
-            self.fields[key].setText(str(default))
+        for (key, _, default, _, choices) in self.key_descriptions:
+            if isinstance(self.fields[key], widgets.QLineEdit):
+                self.fields[key][0].setText(str(default))
+            elif isinstance(self.fields[key], widgets.QComboBox):
+                self.fields[key][0].setCurrentIndex(default)
 
 
 class AmpEnvPreferencesWindow(BasePreferencesWindow):
     key_descriptions = [
-        ("lowpass", "Lowpass Cutoff (Hz)", 8000.0, float),
-        ("highpass", "Highpass Cutoff (Hz)", 2000.0, float),
-        ("rectify_lowpass", "Rectified Cutoff Lowpass (Hz)", 600.0, float),
+        ("lowpass", "Lowpass Cutoff (Hz)", 8000.0, float, None),
+        ("highpass", "Highpass Cutoff (Hz)", 2000.0, float, None),
+        ("rectify_lowpass", "Rectified Cutoff Lowpass (Hz)", 600.0, float, None),
+        ("mode", "Mode", 0, str,
+            ("broadband", "max_zscore")
+        ),
     ]
     heading = "AMP_ENV_ARGS"
 
     def validate(self, kwargs):
         for key, val in kwargs.items():
+            if key == "mode":
+                if val not in ("broadband", "max_zscore"):
+                    return False
+                else:
+                    continue
             try:
                 float(val)
             except:
@@ -536,10 +556,11 @@ class App(widgets.QMainWindow):
             channel=self.loaded_data.get("view_ch"),
             t_start=t0,
             t_stop=t1,
-            ignore_width=0.001,
-            min_size=0.001,
+            ignore_width=0.005,
+            min_size=0.01,
             fuse_duration=0.02,
-            threshold_z=2.0,
+            threshold_z=3.0,
+            amp_env_mode=self.settings.value("AMP_ENV_ARGS/mode", "broadband")
 
         )
         self.loaded_data.set("temporary_intervals", np.array(events))
@@ -1015,8 +1036,9 @@ class AudioView(widgets.QWidget):
                 sig[:, ch],
                 fs=self._loaded_wav.sampling_rate,
                 lowpass=amp_env_settings.get("lowpass", 8000.0),
-                highpass=amp_env_settings.get("highpass", 2000.0),
-                rectify_lowpass=amp_env_settings.get("rectify_lowpass", 600.0)
+                highpass=amp_env_settings.get("highpass", 1000.0),
+                rectify_lowpass=amp_env_settings.get("rectify_lowpass", 600.0),
+                mode=amp_env_settings.get("mode", "broadband")
             )
             # Downsample amp_env to spectrogram sampling rate
             downsample_to_n_samples = int(self.win_size * self.spec_sample_rate)

@@ -33,7 +33,7 @@ def get_default_threshold(audio, window_duration=5.0):
         sig = sliced.data
         sig = sig - np.mean(sig, axis=0)
         sig = bandpass_filter(sig.T, audio.sampling_rate, 1000, 8000).T
-        amp_env = get_amplitude_envelope(sig, audio.sampling_rate, highpass=2000, lowpass=8000)
+        amp_env = get_amplitude_envelope(sig, audio.sampling_rate, highpass=1000, lowpass=8000)
         amp_env = np.mean(amp_env, axis=1)
         threshold = compute_smart_threshold(amp_env, sampling_rate=audio.sampling_rate)
         all_thresholds_list.append(threshold)
@@ -230,6 +230,7 @@ def split_individual_events(
         expected_call_max_duration=1.0,
         max_tries=10,
         scale_factor=1.25,
+        amp_env_mode="broadband",
     ):
     """Divide a signal interval into individual putative events
 
@@ -253,6 +254,7 @@ def split_individual_events(
         sampling_rate,
         highpass=1000,
         lowpass=8000,
+        mode=amp_env_mode,
     )
 
     threshold = compute_smart_threshold(amp_env, sampling_rate)
@@ -270,7 +272,8 @@ def split_individual_events(
             sampling_rate=sampling_rate,
             ignore_width=0.02,
             min_size=0.01,
-            fuse_duration=0.02
+            fuse_duration=0.02,
+            amp_env_mode=amp_env_mode,
         )
         durations = [np.diff(x) / sampling_rate for x in intervals]
         if len(durations) and np.max(durations) > expected_call_max_duration:
@@ -295,12 +298,15 @@ def threshold_all_events(
         ignore_width=0.05,
         min_size=0.05,
         fuse_duration=0.5,
-        threshold_z=3.0
+        threshold_z=3.0,
+        amp_env_mode="broadband"
     ):
     """Find intervals of potential vocalizations periods (in seconds)
 
     The last two windows are combined in case the duration is not an
     even multiple of the window_size
+
+    amp_env_mode can be "broadband" or "max_zscore"
     """
     sampling_rate = audio_signal.sampling_rate
     signal_duration = len(audio_signal) / sampling_rate
@@ -331,20 +337,21 @@ def threshold_all_events(
         window_signal = window_signal - np.mean(window_signal, axis=0)
         window_signal = bandpass_filter(window_signal.T, sampling_rate, 1000, 8000).T
         amp_env = get_amplitude_envelope(
-            window_signal,
+            window_signal[:, channel],
             sampling_rate,
             highpass=1000,
-            lowpass=8000
+            lowpass=8000,
+            mode=amp_env_mode
         )
 
         threshold = compute_smart_threshold(
-            amp_env[:, channel],
+            amp_env,
             sampling_rate=sampling_rate,
             z=threshold_z
         )
 
         intervals = threshold_events(
-            amp_env[:, channel],
+            amp_env,
             threshold,
             sampling_rate=sampling_rate,
             ignore_width=ignore_width,

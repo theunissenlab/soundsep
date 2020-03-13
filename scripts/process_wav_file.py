@@ -47,6 +47,9 @@ parser.add_argument("-c", "--channel", type=int, default=0,
     help="Channel index to threshold on")
 parser.add_argument("--canary", action="store_true",
     help="Canary Flag")
+parser.add_argument("--max_zscore", action="store_true",
+    help="Use max zscore amplitude envelope (better for sounds localized in "
+         "frequency space and/or with fluctuating broadband noise in background.")
 
 
 if __name__ == "__main__":
@@ -54,6 +57,7 @@ if __name__ == "__main__":
 
     filename = args.location
     channel = args.channel
+    amp_env_mode = "max_zscore" if args.max_zscore else "broadband"
 
     if not os.path.exists(filename):
         print("Could not find {}".format(filename))
@@ -111,17 +115,19 @@ if __name__ == "__main__":
         all_intervals = threshold_all_events(
             audio_signal,
             channel=channel,
-            window_size=3.0,
+            window_size=10.0,
             ignore_width=0.005,
-            min_size=0.005,
+            min_size=0.01,
             fuse_duration=0.02,
-            threshold_z=2.0,
+            threshold_z=3.0,
+            amp_env_mode=amp_env_mode,
         )
     else:
         all_intervals = threshold_all_events(
             audio_signal,
             channel=channel,
             window_size=10.0,
+            amp_env_mode=amp_env_mode,
         )
 
     print("Detected intervals in {:.2f}s file in {:.2f}s".format(
@@ -148,6 +154,7 @@ if __name__ == "__main__":
                 expected_call_max_duration=0.1 if args.canary else 0.5,
                 max_tries=10,
                 scale_factor=1.25,
+                amp_env_mode=amp_env_mode,
             )
 
             # since we padded the signal above, we need to be careful
@@ -205,8 +212,11 @@ if __name__ == "__main__":
         sig = sig - np.mean(sig, axis=0)
         sig = bandpass_filter(sig.T, audio_signal.sampling_rate, 1000, 8000).T
 
-        amp_env = get_amplitude_envelope(sig, fs=audio_signal.sampling_rate,
-                                         lowpass=8000, highpass=1000)
+        amp_env = get_amplitude_envelope(sig,
+            fs=audio_signal.sampling_rate,
+            lowpass=8000,
+            highpass=1000
+        )
 
         # Compute the temporal center of mass of the signal
         center_of_mass = t1 - buffer + np.sum((t_arr * np.sum(amp_env, axis=1))) / np.sum(amp_env)
