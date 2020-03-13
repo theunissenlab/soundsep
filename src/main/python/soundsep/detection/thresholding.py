@@ -273,7 +273,6 @@ def split_individual_events(
             ignore_width=0.02,
             min_size=0.01,
             fuse_duration=0.02,
-            amp_env_mode=amp_env_mode,
         )
         durations = [np.diff(x) / sampling_rate for x in intervals]
         if len(durations) and np.max(durations) > expected_call_max_duration:

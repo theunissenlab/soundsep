@@ -13,7 +13,7 @@ import scipy
 import sounddevice as sd
 import umap
 from fbs_runtime.application_context.PyQt5 import ApplicationContext
-from PyQt5.QtCore import (Qt, QObject, QSettings, QThread, QTimer,
+from PyQt5.QtCore import (Qt, QObject, QProcess, QSettings, QThread, QTimer,
         pyqtSignal, pyqtSlot)
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
 from PyQt5.QtWidgets import QMainWindow
@@ -257,6 +257,61 @@ class AmpEnvPreferencesWindow(BasePreferencesWindow):
         return True
 
 
+class CommandLineOutput(widgets.QDialog):
+    """Dialog window that shows the output of a python command
+    """
+    completed = pyqtSignal()
+
+    def __init__(self, command, *args, parent=None):
+        super().__init__(parent=parent)
+        self._cmd = command
+        self._args = args
+        self._process = QProcess(self)
+        self._process.finished.connect(self.completed.emit)
+        self._process.finished.connect(self.closeProcess)
+        self._process.readyRead.connect(self.on_data_received)
+        self.init_ui()
+
+    def init_ui(self):
+        self.layout = widgets.QVBoxLayout()
+        self.cmdLabel = widgets.QLabel(str(self._cmd))
+        self.cmdLabel.setDisabled(True)
+
+        self.consoleOut = widgets.QTextEdit()
+        self.consoleOut.setReadOnly(True)
+
+        self.buttonsLayout = widgets.QHBoxLayout()
+        self.okayButton = widgets.QPushButton("OK [y]")
+        self.okayButton.clicked.connect(partial(self._process.write, "y\n".encode()))
+        self.closeButton = widgets.QPushButton("Close")
+        self.closeButton.clicked.connect(self.closeProcess)
+        self.buttonsLayout.addWidget(self.okayButton)
+        self.buttonsLayout.addWidget(self.closeButton)
+
+        self.layout.addWidget(self.cmdLabel)
+        self.layout.addWidget(self.consoleOut)
+        self.layout.addLayout(self.buttonsLayout)
+        self.setLayout(self.layout)
+
+    def closeProcess(self):
+        self._process.close()
+        self.consoleOut.setText("")
+        self.close()
+
+    def set_args(self, *args):
+        self._args = args
+
+    def run(self):
+        # self._process.start("echo", [])
+        self._process.start(self._cmd, self._args)
+
+    def on_data_received(self):
+        cursor = self.consoleOut.textCursor()
+        cursor.movePosition(cursor.End)
+        cursor.insertText(str(self._process.readAll(), "utf-8"))
+        self.consoleOut.ensureCursorVisible()
+
+
 class App(widgets.QMainWindow):
     """Main App instance with logic for file io
     """
@@ -279,6 +334,12 @@ class App(widgets.QMainWindow):
 
         self.amp_env_pref_window = AmpEnvPreferencesWindow(self.settings, parent=self)
         self.amp_env_pref_window.submitted.connect(self.redrawSignal.emit)
+
+        self.run_call_detection_window = CommandLineOutput(
+            "python",
+            parent=None
+        )
+        self.run_call_detection_window.completed.connect(self._reload_dir)
 
         self.init_ui()
         self.init_actions()
@@ -320,7 +381,8 @@ class App(widgets.QMainWindow):
 
         self.detect_all_calls_action = widgets.QAction("Detect All Calls", self)
         self.detect_calls_in_window_action = widgets.QAction("Detect Calls in Window", self)
-        self.detect_calls_in_window_action.triggered.connect(self.run_detection)
+        self.detect_calls_in_window_action.triggered.connect(self.run_detection_in_window)
+        self.detect_all_calls_action.triggered.connect(self.run_detection_in_full)
 
     def _toggle_amp_norm(self, val):
         self.settings.setValue("AMP_NORM", val)
@@ -492,6 +554,10 @@ class App(widgets.QMainWindow):
                 "No labels found.",
             )
 
+    def _reload_dir(self):
+        """Reload last loaded file without the frills"""
+        self._load_dir(self.settings.value("OPEN_RECENT")[-1])
+
     def load_dir(self, selected_file):
         if not os.path.isdir(selected_file):
             raise IOError("{} is not a directory".format(selected_file))
@@ -509,11 +575,14 @@ class App(widgets.QMainWindow):
         self.settings.setValue("OPEN_RECENT", open_recent)
         self.update_open_recent_actions()
 
-        # Reset the loaded data and view position
         self.loaded_data.reset()
         self.loaded_data.set("view_ch", 0)
         self.loaded_data.set("current_step", 0)
 
+        self._load_dir(selected_file)
+
+    def _load_dir(self, selected_file):
+        # Reset the loaded data and view position
         self.data_directory = os.path.join(selected_file, "outputs")
         wav_files = glob.glob(os.path.join(selected_file, "ch[0-9]*.wav"))
         self.intervals_file = os.path.join(self.data_directory, "intervals.npy")
@@ -524,10 +593,10 @@ class App(widgets.QMainWindow):
         if not len(wav_files):
             raise IOError("No files matching {} found".format(
                     os.path.join(selected_file, regexp)))
-        if not os.path.exists(self.intervals_file):
-            raise IOError("No file named {} exists".format(self.intervals_file))
-        if not os.path.exists(self.spectrograms_file):
-            raise IOError("No file named {} exists".format(self.spectrograms_file))
+        # if not os.path.exists(self.intervals_file):
+        #     raise IOError("No file named {} exists".format(self.intervals_file))
+        # if not os.path.exists(self.spectrograms_file):
+        #     raise IOError("No file named {} exists".format(self.spectrograms_file))
 
         # TODO (kevin): Make it optional for intervals, spectrograms, and labels
         # to exist... we should be able to generate these
@@ -537,8 +606,10 @@ class App(widgets.QMainWindow):
             wav_object = LazyWavInterface(wav_files[0])
 
         self.loaded_data.set("wav", wav_object)
-        self.loaded_data.set("intervals", np.load(self.intervals_file)[()])
-        self.loaded_data.set("spectrograms", np.load(self.spectrograms_file)[()])
+        if os.path.exists(self.intervals_file):
+            self.loaded_data.set("intervals", np.load(self.intervals_file)[()])
+        if os.path.exists(self.spectrograms_file):
+            self.loaded_data.set("spectrograms", np.load(self.spectrograms_file)[()])
         if os.path.exists(self.embedding_file):
             self.loaded_data.set("embedding", np.load(self.embedding_file)[()])
         if os.path.exists(self.labels_file):
@@ -546,9 +617,9 @@ class App(widgets.QMainWindow):
         self.loaded_data.set("loaded_dir", selected_file)
         self.signalLoadedData.emit(self.loaded_data)
 
-    def run_detection(self):
+    def run_detection_in_window(self):
         current_step = self.loaded_data.get("current_step")
-        t0 = current_step * (3.0 / 10.0)  # THIS IS t_step: spec_sample_rate / 10
+        t0 = current_step * (3.0 / 10.0)
         t1 = t0 + self.settings.value("AUDIO_VIEW/window_size", 3.0)
         events = threshold_all_events(
             self.loaded_data.get("wav"),
@@ -565,6 +636,21 @@ class App(widgets.QMainWindow):
         )
         self.loaded_data.set("temporary_intervals", np.array(events))
         self.redrawSignal.emit()
+
+    def run_detection_in_full(self):
+        """Wrapper around the script for detecting intervals
+        """
+        args = [
+            "scripts/process_wav_file.py",
+            self.settings.value("OPEN_RECENT")[-1],
+            "-c {}".format(self.loaded_data.get("view_ch")),
+        ]
+        if self.settings.value("AMP_ENV_ARGS/mode") == "max_zscore":
+            args.append("--max_zscore")
+
+        self.run_call_detection_window.set_args(*args)
+        self.run_call_detection_window.run()
+        self.run_call_detection_window.show()
 
 
 class MainView(widgets.QWidget):
@@ -752,6 +838,7 @@ class AudioView(widgets.QWidget):
         self.init_ui()
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
 
+        self.t_step = self.win_size / 10
         # Set up playback line
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance_playback_line)
@@ -782,7 +869,6 @@ class AudioView(widgets.QWidget):
             self.channelSelectLayout.addWidget(button)
             if i == 0:
                 # Have channel 0 checked by default
-                self.loaded_data.set("view_ch", 0)
                 button.setChecked(True)
 
         # Adds a spacer to keep all items left aligned
@@ -917,7 +1003,6 @@ class AudioView(widgets.QWidget):
         single_step = 1
         steps = int(np.ceil(t_last / self.win_size)) * page_step
 
-        self.t_step = self.win_size / 10
         self.scrollbar.setValue(0)
         self.scrollbar.setMinimum(0)
         self.scrollbar.setMaximum(steps)
@@ -966,22 +1051,23 @@ class AudioView(widgets.QWidget):
         # first find all intervals that either
         #  > end after t1 and before t2 OR
         #  > start after t1 and before t2
-        start_idx = np.searchsorted(self._loaded_intervals[:, 0], t1)
-        for interval_t1, interval_t2 in self._loaded_intervals[start_idx:]:
-            if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
-                for plot in [self.spectrogram_plot, self.amplitude_plot]:
-                    viewbox = plot.getPlotItem().getViewBox()
-                    _, pixel_size = viewbox.viewPixelSize()
-                    ((_, _), (_, ymax)) = viewbox.viewRange()
-                    rect = gui.QGraphicsRectItem(
-                        (interval_t1 - t1) * self.spec_sample_rate,
-                        ymax - 2.5 * pixel_size,
-                        (interval_t2 - interval_t1) * self.spec_sample_rate,
-                        5 * pixel_size)
-                    rect.setPen(pg.mkPen(None))
-                    rect.setBrush(pg.mkBrush("r"))
-                    plot.addItem(rect)
-                    self._drawn_intervals.append(rect)
+        if self._loaded_intervals is not None:
+            start_idx = np.searchsorted(self._loaded_intervals[:, 0], t1)
+            for interval_t1, interval_t2 in self._loaded_intervals[start_idx:]:
+                if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
+                    for plot in [self.spectrogram_plot, self.amplitude_plot]:
+                        viewbox = plot.getPlotItem().getViewBox()
+                        _, pixel_size = viewbox.viewPixelSize()
+                        ((_, _), (_, ymax)) = viewbox.viewRange()
+                        rect = gui.QGraphicsRectItem(
+                            (interval_t1 - t1) * self.spec_sample_rate,
+                            ymax - 2.5 * pixel_size,
+                            (interval_t2 - interval_t1) * self.spec_sample_rate,
+                            5 * pixel_size)
+                        rect.setPen(pg.mkPen(None))
+                        rect.setBrush(pg.mkBrush("r"))
+                        plot.addItem(rect)
+                        self._drawn_intervals.append(rect)
 
         temporary_intervals = self.loaded_data.get("temporary_intervals")
         if temporary_intervals is not None and len(temporary_intervals):
@@ -1108,18 +1194,19 @@ class ClusterSelectView(widgets.QScrollArea):
             else:
                 raise Exception("Not supposed to be anything else")
 
-        for idx, l in enumerate(np.unique(self._labels)):
-            row = idx % self.n_rows
-            col = idx // self.n_rows
-            cluster_select = ImgButton(
-                self._get_cluster_icon(l),
-                l,
-                button_callback=self._button_callback,
-                radio=True,
-                parent=self
-            )
-            self._button_positions[l] = (row, col)
-            self.layout.addWidget(cluster_select, row, col, 1, 1)
+        if self._labels is not None:
+            for idx, l in enumerate(np.unique(self._labels)):
+                row = idx % self.n_rows
+                col = idx // self.n_rows
+                cluster_select = ImgButton(
+                    self._get_cluster_icon(l),
+                    l,
+                    button_callback=self._button_callback,
+                    radio=True,
+                    parent=self
+                )
+                self._button_positions[l] = (row, col)
+                self.layout.addWidget(cluster_select, row, col, 1, 1)
 
     def _button_callback(self, label):
         self._button_positions = {}

@@ -4,14 +4,31 @@ import scipy.signal
 from soundsig.signal import lowpass_filter, highpass_filter
 from soundsig.sound import spectrogram
 
+
 def get_amplitude_envelope(
             data,
             fs=30000.0,
             lowpass=8000.0,
             highpass=1000.0,
             rectify_lowpass=600.0,
+            spec_sample_rate=200.0,
+            spec_freq_spacing=200.0,
             mode="broadband"
         ):
+    """Compute an amplitude envelope of a signal
+
+    This can be done in two modes: "broadband" or "max_zscore"
+
+    Broadband mode is the normal amplitude envelope calcualtion. In broadband
+    mode, the signal is bandpass filtered, rectified, and then lowpass filtered.
+
+    Max Zscore mode is useful to detect calls which may be more localized in
+    the frequency domain from background (white) noise. In max_zscore mode, a
+    spectrogram is computed with spec_sample_rate time bins and
+    spec_freq_spacing frequency bins. For each time bin, the power in each
+    frequency bin is zscored and the max zscored value is assigned to the
+    envelope for that bin.
+    """
     spectral = True
     filtered = highpass_filter(data.T, fs, highpass).T
     filtered = lowpass_filter(filtered.T, fs, lowpass).T
@@ -20,8 +37,8 @@ def get_amplitude_envelope(
         t_spec, f_spec, spec, _ = spectrogram(
             filtered,
             fs,
-            spec_sample_rate=250,
-            freq_spacing=200,
+            spec_sample_rate=spec_sample_rate,
+            freq_spacing=spec_freq_spacing,
             cmplx=False
         )
         spec = np.abs(spec)
