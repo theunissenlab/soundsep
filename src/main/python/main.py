@@ -220,16 +220,15 @@ class BasePreferencesWindow(gui.QDialog):
 
     def restore_defaults(self):
         for (key, _, default, _, choices) in self.key_descriptions:
-            if isinstance(self.fields[key], widgets.QLineEdit):
+            if isinstance(self.fields[key][0], widgets.QLineEdit):
                 self.fields[key][0].setText(str(default))
-            elif isinstance(self.fields[key], widgets.QComboBox):
+            elif isinstance(self.fields[key][0], widgets.QComboBox):
                 self.fields[key][0].setCurrentIndex(default)
-
 
 class AmpEnvPreferencesWindow(BasePreferencesWindow):
     key_descriptions = [
         ("lowpass", "Lowpass Cutoff (Hz)", 8000.0, float, None),
-        ("highpass", "Highpass Cutoff (Hz)", 2000.0, float, None),
+        ("highpass", "Highpass Cutoff (Hz)", 1000.0, float, None),
         ("rectify_lowpass", "Rectified Cutoff Lowpass (Hz)", 600.0, float, None),
         ("mode", "Mode", 0, str,
             ("broadband", "max_zscore")
@@ -359,7 +358,7 @@ class App(widgets.QMainWindow):
         for i in range(MAX_RECENT_FILES):
             action = widgets.QAction("", self)
             action.setVisible(False)
-            action.triggered.connect(self.load_dir)
+            action.triggered.connect(partial(self.open_recent, i))
             self.open_recent_actions.append(action)
 
         self.run_embedding_action = widgets.QAction("Run UMAP", self)
@@ -556,8 +555,10 @@ class App(widgets.QMainWindow):
 
     def _reload_dir(self):
         """Reload last loaded file without the frills"""
-        self._load_dir(self.settings.value("OPEN_RECENT")[-1])
+        self._load_dir(self.loaded_data.get("loaded_dir"))
 
+    def open_recent(self, i):
+        self.load_dir(self.settings.value("OPEN_RECENT")[-i])
     def load_dir(self, selected_file):
         if not os.path.isdir(selected_file):
             raise IOError("{} is not a directory".format(selected_file))
