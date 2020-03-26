@@ -8,6 +8,7 @@ from functools import partial
 
 import hdbscan
 import numpy as np
+import pandas as pd
 import pyqtgraph as pg
 import scipy
 import sounddevice as sd
@@ -175,7 +176,8 @@ class BasePreferencesWindow(gui.QDialog):
                 field = widgets.QComboBox(self)
                 for choice in choices:
                     field.addItem(choice)
-                field.setCurrentIndex(default)
+                idx_of_current = choices.index(current_settings.get(key, choices[default]))
+                field.setCurrentIndex(idx_of_current)
             self.mainLayout.addWidget(label, row, 0)
             self.mainLayout.addWidget(field, row, 1)
             self.fields[key] = (field, choices)
@@ -559,6 +561,7 @@ class App(widgets.QMainWindow):
 
     def open_recent(self, i):
         self.load_dir(self.settings.value("OPEN_RECENT")[-i])
+
     def load_dir(self, selected_file):
         if not os.path.isdir(selected_file):
             raise IOError("{} is not a directory".format(selected_file))
@@ -608,7 +611,10 @@ class App(widgets.QMainWindow):
 
         self.loaded_data.set("wav", wav_object)
         if os.path.exists(self.intervals_file):
-            self.loaded_data.set("intervals", np.load(self.intervals_file)[()])
+            self.loaded_data.set(
+                "intervals",
+                np.load(self.intervals_file, allow_pickle=True)[()]
+            )
         if os.path.exists(self.spectrograms_file):
             self.loaded_data.set("spectrograms", np.load(self.spectrograms_file)[()])
         if os.path.exists(self.embedding_file):
@@ -629,8 +635,8 @@ class App(widgets.QMainWindow):
             t_start=t0,
             t_stop=t1,
             ignore_width=0.005,
-            min_size=0.01,
-            fuse_duration=0.02,
+            min_size=0.005,
+            fuse_duration=0.01,
             threshold_z=3.0,
             amp_env_mode=self.settings.value("AMP_ENV_ARGS/mode", "broadband")
 
@@ -641,17 +647,27 @@ class App(widgets.QMainWindow):
     def run_detection_in_full(self):
         """Wrapper around the script for detecting intervals
         """
-        args = [
-            "scripts/process_wav_file.py",
-            self.settings.value("OPEN_RECENT")[-1],
-            "-c {}".format(self.loaded_data.get("view_ch")),
-        ]
-        if self.settings.value("AMP_ENV_ARGS/mode") == "max_zscore":
-            args.append("--max_zscore")
-
-        self.run_call_detection_window.set_args(*args)
-        self.run_call_detection_window.run()
-        self.run_call_detection_window.show()
+        # Detection channels
+        loaded_wav = self.loaded_data.get("wav")
+        ch_dfs = []
+        for ch in range(loaded_wav.n_channels):
+            events = threshold_all_events(
+                loaded_wav,
+                window_size=10.0,
+                channel=ch,
+                ignore_width=0.01,
+                min_size=0.01,
+                fuse_duration=0.01,
+                threshold_z=2.0,
+                amp_env_mode=self.settings.value("AMP_ENV_ARGS/mode", "broadband")
+            )
+            ch_df = pd.DataFrame(events, columns=["t_start", "t_stop"])
+            ch_df["channel"] = ch * np.ones(len(ch_df))
+            ch_dfs.append(ch_df)
+        intervals = pd.concat(ch_dfs)
+        intervals = intervals.sort_values(by="t_start")
+        self.loaded_data.set("intervals", intervals)
+        self.redrawSignal.emit()
 
 
 class MainView(widgets.QWidget):
@@ -783,8 +799,7 @@ class Scatter2DView(widgets.QWidget):
             self.setDisabled(True)
             self.set_data(None)
         else:
-            self._embedding = self.loaded_data.get("embedding")
-            self.set_data(self._embedding)
+            self.set_data(self.loaded_data.get("embedding"))
 
     def set_data(self, embedding):
         if embedding is None:
@@ -849,6 +864,8 @@ class AudioView(widgets.QWidget):
         snippet_selected_signal.connect(self.on_snippet_selected)
         redraw_signal.connect(self.update_image)
 
+        self._disable_updates_to_plot = False
+
     def _set_channel(self, ch):
         self.loaded_data.set("view_ch", ch)
         self.update_image()
@@ -882,7 +899,11 @@ class AudioView(widgets.QWidget):
     def play_audio(self):
         """Play the sound thats in the currently selected window"""
         self.reset_playback_line()
-        sd.play(self._sig[:, self.loaded_data.get("view_ch")], self._loaded_wav.sampling_rate, blocking=False)
+        sd.play(
+            self._sig[:, self.loaded_data.get("view_ch")],
+            self.loaded_data.get("wav").sampling_rate,
+            blocking=False
+        )
         self.timer.start(self.line_playback_step * 1000 / self.spec_sample_rate)
 
     def reset_playback_line(self):
@@ -959,7 +980,9 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setValue(0)
         self.scrollbar.setMinimum(0)
         self.scrollbar.setMaximum(100)
+        self.scrollbar.sliderPressed.connect(self.on_slider_press)
         self.scrollbar.valueChanged.connect(self.change_range)
+        self.scrollbar.sliderReleased.connect(self.on_slider_release)
 
         self.windowInfoLayout = widgets.QHBoxLayout()
         self.time_label = widgets.QLabel()
@@ -974,15 +997,20 @@ class AudioView(widgets.QWidget):
         layout.addStretch(1)
         self.setLayout(layout)
 
+    def on_slider_press(self):
+        self._disable_updates_to_plot = True
+
+    def on_slider_release(self):
+        self._disable_updates_to_plot = False
+        self.change_range(self.scrollbar.value())
+
     def on_data_load(self, data):
-        self._loaded_wav = self.loaded_data.get("wav")
-        self._loaded_intervals = self.loaded_data.get("intervals")
         self._update_scroll_bar()
         self.change_range(0)
-        self._set_n_channels(self._loaded_wav.n_channels)
+        self._set_n_channels(self.loaded_data.get("wav").n_channels)
 
     def on_snippet_selected(self, idx):
-        t0, t1 = self._loaded_intervals[idx]
+        t0, t1 = self.loaded_data.get("intervals")[idx]
         midpoint = np.mean([t0, t1])
         approx_start_time = midpoint - (self.win_size / 2)
         approx_step = approx_start_time // self.t_step
@@ -999,7 +1027,7 @@ class AudioView(widgets.QWidget):
     def _update_scroll_bar(self):
         """Set scrollbar params to match current audio file length and window size"""
         # Set the scrollbar values
-        t_last = self._loaded_wav.t_max - self.win_size
+        t_last = self.loaded_data.get("wav").t_max - self.win_size
         page_step = 10
         single_step = 1
         steps = int(np.ceil(t_last / self.win_size)) * page_step
@@ -1011,6 +1039,9 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setPageStep(page_step)
 
     def change_range(self, new_value):
+        if self._disable_updates_to_plot:
+            return
+
         self.spectrogram_plot.snippet_line_start.setValue(-1)
         self.spectrogram_plot.snippet_line_stop.setValue(-1)
         self.amplitude_plot.snippet_line_start.setValue(-1)
@@ -1024,9 +1055,9 @@ class AudioView(widgets.QWidget):
         t1 = self.t_step * self.loaded_data.get("current_step")
 
         t2 = t1 + self.win_size
-        t2 = min(t2, self._loaded_wav.t_max)
+        t2 = min(t2, self.loaded_data.get("wav").t_max)
 
-        t_arr, sig = self._loaded_wav.time_slice(t1, t2)
+        t_arr, sig = self.loaded_data.get("wav").time_slice(t1, t2)
         sig -= np.mean(sig, axis=0)
 
         sd.stop()
@@ -1052,23 +1083,47 @@ class AudioView(widgets.QWidget):
         # first find all intervals that either
         #  > end after t1 and before t2 OR
         #  > start after t1 and before t2
-        if self._loaded_intervals is not None:
-            start_idx = np.searchsorted(self._loaded_intervals[:, 0], t1)
-            for interval_t1, interval_t2 in self._loaded_intervals[start_idx:]:
-                if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
-                    for plot in [self.spectrogram_plot, self.amplitude_plot]:
-                        viewbox = plot.getPlotItem().getViewBox()
-                        _, pixel_size = viewbox.viewPixelSize()
-                        ((_, _), (_, ymax)) = viewbox.viewRange()
-                        rect = gui.QGraphicsRectItem(
-                            (interval_t1 - t1) * self.spec_sample_rate,
-                            ymax - 2.5 * pixel_size,
-                            (interval_t2 - interval_t1) * self.spec_sample_rate,
-                            5 * pixel_size)
-                        rect.setPen(pg.mkPen(None))
-                        rect.setBrush(pg.mkBrush("r"))
-                        plot.addItem(rect)
-                        self._drawn_intervals.append(rect)
+        if self.loaded_data.has("intervals"):
+            intervals = self.loaded_data.get("intervals")
+            if isinstance(intervals, pd.DataFrame):
+                start_index = np.searchsorted(intervals["t_start"], t1)
+                for idx in range(start_index, len(intervals)):
+                    interval_t1, interval_t2, ch = intervals.iloc[idx][["t_start", "t_stop", "channel"]]
+                    if ch != self.loaded_data.get("view_ch"):
+                        continue
+                    if interval_t1 > t2:
+                        break
+                    if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
+                        for plot in [self.spectrogram_plot, self.amplitude_plot]:
+                            viewbox = plot.getPlotItem().getViewBox()
+                            _, pixel_size = viewbox.viewPixelSize()
+                            ((_, _), (_, ymax)) = viewbox.viewRange()
+                            rect = gui.QGraphicsRectItem(
+                                (interval_t1 - t1) * self.spec_sample_rate,
+                                ymax - 2.5 * pixel_size,
+                                (interval_t2 - interval_t1) * self.spec_sample_rate,
+                                5 * pixel_size)
+                            rect.setPen(pg.mkPen(None))
+                            rect.setBrush(pg.mkBrush("r"))
+                            plot.addItem(rect)
+                            self._drawn_intervals.append(rect)
+            else:
+                start_idx = np.searchsorted(intervals[:, 0], t1)
+                for interval_t1, interval_t2 in intervals[start_idx:]:
+                    if (t1 <= interval_t2 <= t2) or (t1 <= interval_t1 <= t2):
+                        for plot in [self.spectrogram_plot, self.amplitude_plot]:
+                            viewbox = plot.getPlotItem().getViewBox()
+                            _, pixel_size = viewbox.viewPixelSize()
+                            ((_, _), (_, ymax)) = viewbox.viewRange()
+                            rect = gui.QGraphicsRectItem(
+                                (interval_t1 - t1) * self.spec_sample_rate,
+                                ymax - 2.5 * pixel_size,
+                                (interval_t2 - interval_t1) * self.spec_sample_rate,
+                                5 * pixel_size)
+                            rect.setPen(pg.mkPen(None))
+                            rect.setBrush(pg.mkBrush("r"))
+                            plot.addItem(rect)
+                            self._drawn_intervals.append(rect)
 
         temporary_intervals = self.loaded_data.get("temporary_intervals")
         if temporary_intervals is not None and len(temporary_intervals):
@@ -1093,7 +1148,7 @@ class AudioView(widgets.QWidget):
         self._sig = sig
         t_spec, f_spec, spec, _ = spectrogram(
             sig[:, self.loaded_data.get("view_ch")],
-            self._loaded_wav.sampling_rate,
+            self.loaded_data.get("wav").sampling_rate,
             spec_sample_rate=self.spec_sample_rate,
             freq_spacing=self.spec_freq_spacing,
             min_freq=self.min_freq,
@@ -1121,7 +1176,7 @@ class AudioView(widgets.QWidget):
             )
             amp_env = get_amplitude_envelope(
                 sig[:, ch],
-                fs=self._loaded_wav.sampling_rate,
+                fs=self.loaded_data.get("wav").sampling_rate,
                 lowpass=amp_env_settings.get("lowpass", 8000.0),
                 highpass=amp_env_settings.get("highpass", 1000.0),
                 rectify_lowpass=amp_env_settings.get("rectify_lowpass", 600.0),
@@ -1166,13 +1221,12 @@ class ClusterSelectView(widgets.QScrollArea):
 
     def __init__(self, parent=None, data_loaded_signal=None, cluster_selected_signal=None):
         super().__init__(parent)
+        self.loaded_data = AppData()
         self.init_ui()
         self.cluster_selected_signal = cluster_selected_signal
         data_loaded_signal.connect(self.on_data_load)
 
     def on_data_load(self, data):
-        self._labels = data.get("labels")
-        self._spectrograms = data.get("spectrograms")
         if not data.has("labels"):
             self.setDisabled(True)
         else:
@@ -1195,8 +1249,8 @@ class ClusterSelectView(widgets.QScrollArea):
             else:
                 raise Exception("Not supposed to be anything else")
 
-        if self._labels is not None:
-            for idx, l in enumerate(np.unique(self._labels)):
+        if self.loaded_data.has("labels"):
+            for idx, l in enumerate(np.unique(self.loaded_data.get("labels"))):
                 row = idx % self.n_rows
                 col = idx // self.n_rows
                 cluster_select = ImgButton(
@@ -1213,8 +1267,10 @@ class ClusterSelectView(widgets.QScrollArea):
         self._button_positions = {}
         self.cluster_selected_signal.emit(
             label,
-            self._spectrograms[self._labels == label],
-            np.where(self._labels == label)[0]
+            self.loaded_data.get("spectrograms")[
+                self.loaded_data.get("labels") == label
+            ],
+            np.where(self.loaded_data.get("labels") == label)[0]
         )
 
         # Manual implementation of mutually exclusive radio buttons
@@ -1227,7 +1283,12 @@ class ClusterSelectView(widgets.QScrollArea):
                 button.widget().button.setChecked(False)
 
     def _get_cluster_icon(self, label):
-        mean_spectrogram = np.mean(self._spectrograms[self._labels == label], axis=0)
+        mean_spectrogram = np.mean(
+            self.loaded_data.get("spectrograms")[
+                self.loaded_data.get("labels") == label
+            ],
+            axis=0
+        )
         return _spec2icon(mean_spectrogram)
 
 
