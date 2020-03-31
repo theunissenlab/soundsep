@@ -4,6 +4,7 @@ sys.path.append("code/soundsep")
 import glob
 import os
 import re
+import uuid
 from functools import partial
 
 import hdbscan
@@ -11,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 import scipy
+import scipy.ndimage
 import sounddevice as sd
 import umap
 from fbs_runtime.application_context.PyQt5 import ApplicationContext
@@ -117,6 +119,23 @@ class BackgroundEmbedding(QObject):
             n_neighbors=10, repulsion_strength=10.0, min_dist=0.9
         ).fit_transform(points)
         self.finished.emit(embedding)
+
+
+class SpectrogramWorker(QObject):
+    """Async worker for computing spectrogram"""
+    finished = pyqtSignal(object, object)
+
+    def __init__(self, key, data, *args, **kwargs):
+        super().__init__()
+        self.key = key
+        self.data = data
+        self.args = args
+        self.kwargs = kwargs
+
+    @pyqtSlot()
+    def compute(self):
+        t_spec, f_spec, spec, _ = spectrogram(self.data, *self.args, **self.kwargs)
+        self.finished.emit(self.key, spec)
 
 
 def read_settings_dict(settings, heading, key_descriptions):
@@ -334,6 +353,7 @@ class App(widgets.QMainWindow):
         super().__init__()
         self.title = "SoundSep"
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
+        self.settings.setValue("ASYNC_FLAG", True)
         self.loaded_data = AppData()
 
         self.amp_env_pref_window = AmpEnvPreferencesWindow(self.settings, parent=self)
@@ -834,7 +854,6 @@ class Scatter2DView(widgets.QWidget):
 
 class SpectrogramViewBox(pg.ViewBox):
     """docstring for SpectrogramViewBox."""
-        # print("here")
     dragComplete = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
     dragInProgress = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
 
@@ -859,7 +878,7 @@ class AudioView(widgets.QWidget):
     Also include a second tab to switch between spectrogram and amplitude
     """
     win_size = 5.0  # seconds
-    spec_sample_rate = 500
+    spec_sample_rate = 1000
     spec_freq_spacing = 50
     min_freq = 250
     max_freq = 8000
@@ -887,13 +906,15 @@ class AudioView(widgets.QWidget):
         self.timer.timeout.connect(self.advance_playback_line)
         self.reset_playback_line()
 
+        self.thread = None
+
         self.range_selected_signal = range_selected_signal
         data_loaded_signal.connect(self.on_data_load)
         snippet_selected_signal.connect(self.on_snippet_selected)
         redraw_signal.connect(self.update_image)
         self.range_selected_signal.connect(self.on_range_selected)
 
-        self._disable_updates_to_plot = False
+        self._lowres_preview_only = False
 
     def _set_channel(self, ch):
         self.loaded_data.set("view_ch", ch)
@@ -1119,10 +1140,10 @@ class AudioView(widgets.QWidget):
         self.setLayout(layout)
 
     def on_slider_press(self):
-        self._disable_updates_to_plot = True
+        self._lowres_preview_only = True
 
     def on_slider_release(self):
-        self._disable_updates_to_plot = False
+        self._lowres_preview_only = False
         self.change_range(self.scrollbar.value())
 
     def on_data_load(self, data):
@@ -1161,8 +1182,8 @@ class AudioView(widgets.QWidget):
 
     def change_range(self, new_value):
         self.range_selected_signal.emit(None, None)
-        if self._disable_updates_to_plot:
-            return
+        # if self._lowres_preview_only:
+        #     return
 
         self.spectrogram_plot.snippet_line_start.setValue(-1)
         self.spectrogram_plot.snippet_line_stop.setValue(-1)
@@ -1170,10 +1191,10 @@ class AudioView(widgets.QWidget):
         self.amplitude_plot.snippet_line_stop.setValue(-1)
         self.loaded_data.set("current_step", new_value)
         self.scrollbar.setValue(new_value)
-        self.update_image()
+        self.update_image(lowres=self._lowres_preview_only)
         self._update_time_label()
 
-    def update_image(self):
+    def update_image(self, lowres=False):
         t1 = self.t_step * self.loaded_data.get("current_step")
 
         t2 = t1 + self.win_size
@@ -1186,10 +1207,11 @@ class AudioView(widgets.QWidget):
         sd.stop()
         self.reset_playback_line()
 
-        self._update_image_spectrogram(sig)
-        self._update_image_amplitude(sig)
+        self._update_image_spectrogram(sig, lowres=lowres)
+        self._update_image_amplitude(sig, lowres=lowres)
 
-        self._draw_intervals()
+        if not lowres:
+            self._draw_intervals()
 
     def _draw_intervals(self):
         """Draws rectangles illustrating the intervals in the visible window
@@ -1267,16 +1289,13 @@ class AudioView(widgets.QWidget):
                         plot.addItem(rect)
                         self._drawn_intervals.append(rect)
 
-    def _update_image_spectrogram(self, sig):
-        t_spec, f_spec, spec, _ = spectrogram(
-            sig[:, self.loaded_data.get("view_ch")],
-            self.loaded_data.get("wav").sampling_rate,
-            spec_sample_rate=self.spec_sample_rate,
-            freq_spacing=self.spec_freq_spacing,
-            min_freq=self.min_freq,
-            max_freq=self.max_freq, cmplx=False
-        )
+    def _on_spectrogram_completed(self, key, spec):
+        if key != self._last_spec_key:
+            return
+        else:
+            self._draw_spectrogram(spec)
 
+    def _draw_spectrogram(self, spec):
         logspec = 20 * np.log10(np.abs(spec))
         max_b = logspec.max()
         min_b = logspec.max() - 40
@@ -1285,7 +1304,64 @@ class AudioView(widgets.QWidget):
         self.image.setImage(logspec.T)
         viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
 
-    def _update_image_amplitude(self, sig):
+    def _update_image_spectrogram(self, sig, lowres=False):
+        # Always makes a low resolution spectrogram and draw that first
+        resolution_factors = (4, 5)
+        t_spec, f_spec, spec, _ = spectrogram(
+            sig[:, self.loaded_data.get("view_ch")],
+            self.loaded_data.get("wav").sampling_rate,
+            spec_sample_rate=self.spec_sample_rate / resolution_factors[0],
+            freq_spacing=self.spec_freq_spacing * resolution_factors[1],
+            min_freq=self.min_freq,
+            max_freq=self.max_freq, cmplx=False
+        )
+        spec = np.repeat(spec, resolution_factors[1], axis=0)
+        spec = np.repeat(spec, resolution_factors[0], axis=1)
+        spec = scipy.ndimage.gaussian_filter(spec, (1, 1))
+        self._draw_spectrogram(spec)
+
+        # If we want to make a highres spectrogram as well, attempt to do that
+        # in a second thread.
+        if not lowres:
+            # Since multiple spectrograms can be requested (scrolling is happening)
+            # we don't want to accidentally draw old spectrograms. So, assign
+            # the worker a unique key. When it returns its spectrogram, will
+            # make sure the key matches the latest generated key
+            # (in _on_spectrogram_completed)
+            self._last_spec_key = uuid.uuid4().hex
+            self.worker = SpectrogramWorker(
+                self._last_spec_key,
+                sig[:, self.loaded_data.get("view_ch")],
+                self.loaded_data.get("wav").sampling_rate,
+                spec_sample_rate=self.spec_sample_rate,
+                freq_spacing=self.spec_freq_spacing,
+                min_freq=self.min_freq,
+                max_freq=self.max_freq, cmplx=False
+            )
+            self.worker.finished.connect(self._on_spectrogram_completed)
+            if self.settings.value("ASYNC_FLAG", False, type=bool):
+                self._reset_thread()
+                self.worker.moveToThread(self.thread)
+                self.thread.started.connect(self.worker.compute)
+                self.thread.start()
+            else:
+                self.worker.compute()
+
+    def _reset_thread(self):
+        if self.thread is not None:
+            self.thread.exit()
+        self.thread = QThread(self)
+        return self.thread
+
+    def closeEvent(self):
+        if self.thread is not None:
+            self.thread.stop()
+
+    def _update_image_amplitude(self, sig, lowres=False):
+        """Updates the amp env plot
+
+        Ignores the lowres flag
+        """
         highlighter_pen = pg.mkPen((29, 224, 32, 255))
         bg_pen = pg.mkPen((204, 204, 204, 63))
 
@@ -1324,6 +1400,8 @@ class AudioView(widgets.QWidget):
         self.amplitude_plot.addItem(self.amplitude_plot.playback_line)
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_start)
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_stop)
+        self.amplitude_plot.addItem(self.amplitude_plot.selected_range_line_start)
+        self.amplitude_plot.addItem(self.amplitude_plot.selected_range_line_stop)
 
         self.amplitude_plot.getViewBox().setRange(
             xRange=(0, len(amp_env)),
