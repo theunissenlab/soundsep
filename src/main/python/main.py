@@ -227,6 +227,7 @@ class BasePreferencesWindow(gui.QDialog):
             elif isinstance(self.fields[key][0], widgets.QComboBox):
                 self.fields[key][0].setCurrentIndex(default)
 
+
 class AmpEnvPreferencesWindow(BasePreferencesWindow):
     key_descriptions = [
         ("lowpass", "Lowpass Cutoff (Hz)", 8000.0, float, None),
@@ -303,7 +304,6 @@ class CommandLineOutput(widgets.QDialog):
         self._args = args
 
     def run(self):
-        # self._process.start("echo", [])
         self._process.start(self._cmd, self._args)
 
     def on_data_received(self):
@@ -326,6 +326,9 @@ class App(widgets.QMainWindow):
 
     # Overall index of snippet selected
     snippetSelected = pyqtSignal(int)
+
+    # When a time range is clicked and dragged
+    rangeSelected = pyqtSignal(object, object)
 
     def __init__(self):
         super().__init__()
@@ -626,18 +629,23 @@ class App(widgets.QMainWindow):
 
     def run_detection_in_window(self):
         current_step = self.loaded_data.get("current_step")
-        t0 = current_step * (3.0 / 10.0)
-        t1 = t0 + self.settings.value("AUDIO_VIEW/window_size", 3.0)
+        current_range = self.loaded_data.get("selected_range")
+        if current_range is None:
+            t0 = current_step * (self.settings.value("AUDIO_VIEW/window_size", 5.0) / 10.0)
+            t1 = t0 + self.settings.value("AUDIO_VIEW/window_size", 5.0)
+        else:
+            t0, t1 = current_range
+
         events = threshold_all_events(
             self.loaded_data.get("wav"),
             window_size=None,
             channel=self.loaded_data.get("view_ch"),
             t_start=t0,
             t_stop=t1,
-            ignore_width=0.005,
-            min_size=0.005,
+            ignore_width=0.05,
+            min_size=0.05,
             fuse_duration=0.01,
-            threshold_z=3.0,
+            threshold_z=2.0,
             amp_env_mode=self.settings.value("AMP_ENV_ARGS/mode", "broadband")
 
         )
@@ -729,6 +737,7 @@ class MainView(widgets.QWidget):
             None,
             data_loaded_signal=self.parent().signalLoadedData,
             snippet_selected_signal=self.parent().snippetSelected,
+            range_selected_signal=self.parent().rangeSelected,
             redraw_signal=self.parent().redrawSignal,
         )
 
@@ -799,6 +808,7 @@ class Scatter2DView(widgets.QWidget):
             self.setDisabled(True)
             self.set_data(None)
         else:
+            self.setDisabled(False)
             self.set_data(self.loaded_data.get("embedding"))
 
     def set_data(self, embedding):
@@ -822,6 +832,22 @@ class Scatter2DView(widgets.QWidget):
         return embedding
 
 
+class SpectrogramViewBox(pg.ViewBox):
+    """docstring for SpectrogramViewBox."""
+        # print("here")
+    dragComplete = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
+    dragInProgress = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
+
+    def mouseDragEvent(self, event):
+        event.accept()
+        start_pos = self.mapSceneToView(event.buttonDownScenePos())
+        end_pos = self.mapSceneToView(event.scenePos())
+        if event.isFinish():
+            self.dragComplete.emit(start_pos, end_pos)
+        else:
+            self.dragInProgress.emit(start_pos, end_pos)
+
+
 class AudioView(widgets.QWidget):
     """Panel for viewing spectrogram of a time period
 
@@ -832,7 +858,7 @@ class AudioView(widgets.QWidget):
 
     Also include a second tab to switch between spectrogram and amplitude
     """
-    win_size = 3.0  # seconds
+    win_size = 5.0  # seconds
     spec_sample_rate = 500
     spec_freq_spacing = 50
     min_freq = 250
@@ -846,6 +872,7 @@ class AudioView(widgets.QWidget):
             parent=None,
             data_loaded_signal=None,
             snippet_selected_signal=None,
+            range_selected_signal=None,
             redraw_signal=None
         ):
         super().__init__(parent)
@@ -860,9 +887,11 @@ class AudioView(widgets.QWidget):
         self.timer.timeout.connect(self.advance_playback_line)
         self.reset_playback_line()
 
+        self.range_selected_signal = range_selected_signal
         data_loaded_signal.connect(self.on_data_load)
         snippet_selected_signal.connect(self.on_snippet_selected)
         redraw_signal.connect(self.update_image)
+        self.range_selected_signal.connect(self.on_range_selected)
 
         self._disable_updates_to_plot = False
 
@@ -898,17 +927,31 @@ class AudioView(widgets.QWidget):
 
     def play_audio(self):
         """Play the sound thats in the currently selected window"""
-        self.reset_playback_line()
-        sd.play(
-            self._sig[:, self.loaded_data.get("view_ch")],
-            self.loaded_data.get("wav").sampling_rate,
-            blocking=False
-        )
+        selected_range = self.loaded_data.get("selected_range")
+        if selected_range is None:
+            self.reset_playback_line()
+            sd.play(
+                self._sig[:, self.loaded_data.get("view_ch")],
+                self.loaded_data.get("wav").sampling_rate,
+                blocking=False
+            )
+        else:
+            base_t = self.t_step * self.loaded_data.get("current_step")
+            start_idx = int(round((selected_range[0] - base_t)* self.loaded_data.get("wav").sampling_rate))
+            stop_idx = int(round((selected_range[1] - base_t) * self.loaded_data.get("wav").sampling_rate))
+            playback_line_idx = int(round((selected_range[0] - base_t) * self.spec_sample_rate))
+            self.reset_playback_line(playback_line_idx)
+            sd.play(
+                self._sig[start_idx:stop_idx, self.loaded_data.get("view_ch")],
+                self.loaded_data.get("wav").sampling_rate,
+                blocking=False
+            )
+
         self.timer.start(self.line_playback_step * 1000 / self.spec_sample_rate)
 
-    def reset_playback_line(self):
+    def reset_playback_line(self, start_at=None):
         self.timer.stop()
-        self._playback_line_pos = -1
+        self._playback_line_pos = start_at or -1
         self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
         self.amplitude_plot.playback_line.setValue(self._playback_line_pos)
 
@@ -917,7 +960,12 @@ class AudioView(widgets.QWidget):
 
         Reset the line when it reaches the end
         """
-        max_playback_line_pos = int(self.win_size * self.spec_sample_rate)
+        base_t = self.t_step * self.loaded_data.get("current_step")
+        selected_range = self.loaded_data.get("selected_range")
+        if selected_range is None:
+            max_playback_line_pos = int(self.win_size * self.spec_sample_rate)
+        else:
+            max_playback_line_pos = int((selected_range[1] - base_t) * self.spec_sample_rate)
         if self._playback_line_pos < max_playback_line_pos:
             self._playback_line_pos += self.line_playback_step
             self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
@@ -925,47 +973,120 @@ class AudioView(widgets.QWidget):
         else:
             self.reset_playback_line()
 
+    def on_drag_complete(self, start, end):
+        # Get current page time
+        # Using the spec sample rate, convert start and end to time deltas
+        # Figrue out the absolute times for the drag start and stop
+        # Emit selection event "on_selected_drag"
+        start_dt = start.x() / self.spec_sample_rate
+        end_dt = end.x() / self.spec_sample_rate
+        base_t = self.t_step * self.loaded_data.get("current_step")
+        start_t = base_t + start_dt
+        end_t = base_t + end_dt
+        self.range_selected_signal.emit(start_t, end_t)
+
+    def on_drag_in_progress(self, start, end):
+        curve_1 = self._draw_drag_curves(self.spectrogram_plot, start, end)
+        curve_2 = self._draw_drag_curves(self.amplitude_plot, start, end)
+        self.drag_curves = {
+            self.spectrogram_plot: curve_1,
+            self.amplitude_plot: curve_2
+        }
+
+    def _draw_drag_curves(self, plot, start, end):
+        pen = pg.mkPen((59, 124, 32, 255))
+        self._clear_drag_lines()
+        curve = pg.PlotCurveItem(
+            [start.x(), end.x()],
+            [start.y(), end.y()],
+        )
+        plot.addItem(curve)
+        return curve
+
+    def _clear_drag_lines(self):
+        if len(self.drag_curves):
+            self.spectrogram_plot.removeItem(self.drag_curves[self.spectrogram_plot])
+            self.amplitude_plot.removeItem(self.drag_curves[self.amplitude_plot])
+
+    def on_range_selected(self, start_t, end_t):
+        if start_t is None or end_t is None:
+            self._clear_drag_lines()
+            if self.loaded_data.has("selected_range"):
+                self.loaded_data.clear("selected_range")
+            self.spectrogram_plot.selected_range_line_start.setValue(-1)
+            self.spectrogram_plot.selected_range_line_start.setValue(-1)
+            self.amplitude_plot.selected_range_line_start.setValue(-1)
+            self.amplitude_plot.selected_range_line_start.setValue(-1)
+        else:
+            base_t = self.t_step * self.loaded_data.get("current_step")
+            start_t, end_t = min(start_t, end_t), max(start_t, end_t)
+            self.loaded_data.set("selected_range", (start_t, end_t))
+            start_idx = int(round((start_t - base_t) * self.spec_sample_rate))
+            end_idx = int(round((end_t - base_t) * self.spec_sample_rate))
+            self.spectrogram_plot.selected_range_line_start.setValue(start_idx)
+            self.spectrogram_plot.selected_range_line_stop.setValue(end_idx)
+            self.amplitude_plot.selected_range_line_start.setValue(start_idx)
+            self.amplitude_plot.selected_range_line_stop.setValue(end_idx)
+
     def init_ui(self):
         ### Spectrogram Plot
-        self.spectrogram_plot = pg.PlotWidget()
+        self.spectrogram_viewbox = SpectrogramViewBox()
+        self.spectrogram_plot = pg.PlotWidget(viewBox=self.spectrogram_viewbox)
         self.spectrogram_plot.plotItem.setMouseEnabled(x=False, y=False)
         self.image = pg.ImageItem()
         self.spectrogram_plot.playback_line = pg.InfiniteLine()
         self.spectrogram_plot.snippet_line_start = pg.InfiniteLine()
         self.spectrogram_plot.snippet_line_stop = pg.InfiniteLine()
+        self.spectrogram_plot.selected_range_line_start = pg.InfiniteLine()
+        self.spectrogram_plot.selected_range_line_stop = pg.InfiniteLine()
         self.spectrogram_plot.addItem(self.image)
         self.spectrogram_plot.addItem(self.spectrogram_plot.playback_line)
         self.spectrogram_plot.addItem(self.spectrogram_plot.snippet_line_start)
         self.spectrogram_plot.addItem(self.spectrogram_plot.snippet_line_stop)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_start)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_stop)
         self.spectrogram_plot.hideAxis("left")
         self.spectrogram_plot.hideAxis("bottom")
+        self.spectrogram_plot.hideButtons()  # Gets rid of "A" autorange button
         self.spectrogram_plot.getViewBox().setRange(
             xRange=(0, int(self.win_size * self.spec_sample_rate)),
             yRange=(0, int((self.max_freq - self.min_freq) / self.spec_freq_spacing)),
             padding=0,
             disableAutoRange=True
         )
+        self.spectrogram_viewbox.dragComplete.connect(self.on_drag_complete)
+        self.spectrogram_viewbox.dragInProgress.connect(self.on_drag_in_progress)
+        self.drag_curves = {}
+
         self._drawn_intervals = []
 
         ### Amplitude Plot
         # The amplitude plot will use the same sampling rate as the spectrograms
         # ideally to make the playback line simpler...
-        self.amplitude_plot = pg.PlotWidget()
+        self.amplitude_viewbox = SpectrogramViewBox()
+        self.amplitude_plot = pg.PlotWidget(viewBox=self.amplitude_viewbox)
         self.amplitude_plot.plotItem.setMouseEnabled(x=False, y=False)
         self.amplitude_plot.playback_line = pg.InfiniteLine()
         self.amplitude_plot.snippet_line_start = pg.InfiniteLine()
         self.amplitude_plot.snippet_line_stop = pg.InfiniteLine()
+        self.amplitude_plot.selected_range_line_start = pg.InfiniteLine()
+        self.amplitude_plot.selected_range_line_stop = pg.InfiniteLine()
         self.amplitude_plot.addItem(self.amplitude_plot.playback_line)
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_start)
         self.amplitude_plot.addItem(self.amplitude_plot.snippet_line_stop)
+        self.amplitude_plot.addItem(self.amplitude_plot.selected_range_line_start)
+        self.amplitude_plot.addItem(self.amplitude_plot.selected_range_line_stop)
         self.amplitude_plot.hideAxis("left")
         self.amplitude_plot.hideAxis("bottom")
+        self.amplitude_plot.hideButtons()  # Gets rid of "A" autorange button
         self.amplitude_plot.getViewBox().setRange(
             xRange=(0, int(self.win_size * self.spec_sample_rate)),
             yRange=(0, 1),
             padding=0,
             disableAutoRange=True
         )
+        self.amplitude_viewbox.dragComplete.connect(self.on_drag_complete)
+        self.amplitude_viewbox.dragInProgress.connect(self.on_drag_in_progress)
 
         # Put the plots in a tab widget
         self.tab_panel = widgets.QTabWidget(self)
@@ -1039,6 +1160,7 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setPageStep(page_step)
 
     def change_range(self, new_value):
+        self.range_selected_signal.emit(None, None)
         if self._disable_updates_to_plot:
             return
 
@@ -1059,6 +1181,7 @@ class AudioView(widgets.QWidget):
 
         t_arr, sig = self.loaded_data.get("wav").time_slice(t1, t2)
         sig -= np.mean(sig, axis=0)
+        self._sig = sig
 
         sd.stop()
         self.reset_playback_line()
@@ -1100,9 +1223,9 @@ class AudioView(widgets.QWidget):
                             ((_, _), (_, ymax)) = viewbox.viewRange()
                             rect = gui.QGraphicsRectItem(
                                 (interval_t1 - t1) * self.spec_sample_rate,
-                                ymax - 2.5 * pixel_size,
+                                ymax - 5 * pixel_size,
                                 (interval_t2 - interval_t1) * self.spec_sample_rate,
-                                5 * pixel_size)
+                                10 * pixel_size)
                             rect.setPen(pg.mkPen(None))
                             rect.setBrush(pg.mkBrush("r"))
                             plot.addItem(rect)
@@ -1145,7 +1268,6 @@ class AudioView(widgets.QWidget):
                         self._drawn_intervals.append(rect)
 
     def _update_image_spectrogram(self, sig):
-        self._sig = sig
         t_spec, f_spec, spec, _ = spectrogram(
             sig[:, self.loaded_data.get("view_ch")],
             self.loaded_data.get("wav").sampling_rate,
@@ -1205,7 +1327,9 @@ class AudioView(widgets.QWidget):
 
         self.amplitude_plot.getViewBox().setRange(
             xRange=(0, len(amp_env)),
-            yRange=(0, amp_env_max)
+            yRange=(0, amp_env_max),
+            padding=0,
+            disableAutoRange=True
         )
 
     def _update_time_label(self):

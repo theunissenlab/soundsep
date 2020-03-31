@@ -389,4 +389,7 @@ def threshold_all_events(
                 i1 / sampling_rate + window_start
             ))
 
+    if last_interval_to_check is not None:
+        all_intervals.append(last_interval_to_check)
+
     return all_intervals
