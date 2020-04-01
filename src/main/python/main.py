@@ -353,7 +353,15 @@ class App(widgets.QMainWindow):
         super().__init__()
         self.title = "SoundSep"
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
-        self.settings.setValue("ASYNC_FLAG", True)
+
+        # There seems to be some issues with using threads
+        # (at least the way I figured out to use them) on Mac.
+        # So don't.
+        if sys.platform == "darwin":
+            self.settings.setValue("ASYNC_FLAG", False)
+        else:
+            self.settings.setValue("ASYNC_FLAG", True)
+
         self.loaded_data = AppData()
 
         self.amp_env_pref_window = AmpEnvPreferencesWindow(self.settings, parent=self)
@@ -394,6 +402,8 @@ class App(widgets.QMainWindow):
         self.save_embedding_action.triggered.connect(self.save_embedding)
         self.save_labels_action = widgets.QAction("Save Labels", self)
         self.save_labels_action.triggered.connect(self.save_labels)
+        self.save_intervals_action = widgets.QAction("Save Intervals", self)
+        self.save_intervals_action.triggered.connect(self.save_intervals)
 
         self.toggle_amp_norm_action = widgets.QAction("Normalize Amplitude Envelope", self)
         self.toggle_amp_norm_action.setCheckable(True)
@@ -442,6 +452,7 @@ class App(widgets.QMainWindow):
         fileMenu.addSeparator()
         fileMenu.addAction(self.save_embedding_action)
         fileMenu.addAction(self.save_labels_action)
+        fileMenu.addAction(self.save_intervals_action)
 
         viewMenu = mainMenu.addMenu("&View")
         soundMenu = viewMenu.addMenu("&Sound Display")
@@ -457,6 +468,10 @@ class App(widgets.QMainWindow):
         analysisMenu.addAction(self.detect_calls_in_window_action)
         analysisMenu.addAction(self.detect_all_calls_action)
         self.display_viewer()
+
+    def setup_shortcuts(self):
+        self.save_shortcut = widgets.QShortcut(gui.QKeySequence.Save, self)
+        self.save_shortcut.activated.connect(self.save_intervals)
 
     def display_viewer(self):
         self.main_view = MainView(self)
@@ -578,6 +593,21 @@ class App(widgets.QMainWindow):
                 "No labels found.",
             )
 
+    def save_intervals(self):
+        if self.loaded_data.has("intervals"):
+            self.loaded_data.get("intervals").to_pickle(self.intervals_file)
+            widgets.QMessageBox.about(
+                self,
+                "Saved",
+                "Intervals saved successfully.",
+            )
+        else:
+            widgets.QMessageBox.warning(
+                self,
+                "Error",
+                "No intervals found.",
+            )
+
     def _reload_dir(self):
         """Reload last loaded file without the frills"""
         self._load_dir(self.loaded_data.get("loaded_dir"))
@@ -612,7 +642,7 @@ class App(widgets.QMainWindow):
         # Reset the loaded data and view position
         self.data_directory = os.path.join(selected_file, "outputs")
         wav_files = glob.glob(os.path.join(selected_file, "ch[0-9]*.wav"))
-        self.intervals_file = os.path.join(self.data_directory, "intervals.npy")
+        self.intervals_file = os.path.join(self.data_directory, "intervals.pkl")
         self.spectrograms_file = os.path.join(self.data_directory, "spectrograms.npy")
         self.labels_file = os.path.join(self.data_directory, "labels.npy")
         self.embedding_file = os.path.join(self.data_directory, "embedding.npy")
@@ -636,7 +666,7 @@ class App(widgets.QMainWindow):
         if os.path.exists(self.intervals_file):
             self.loaded_data.set(
                 "intervals",
-                np.load(self.intervals_file, allow_pickle=True)[()]
+                pd.read_pickle(self.intervals_file)
             )
         if os.path.exists(self.spectrograms_file):
             self.loaded_data.set("spectrograms", np.load(self.spectrograms_file)[()])
@@ -662,8 +692,8 @@ class App(widgets.QMainWindow):
             channel=self.loaded_data.get("view_ch"),
             t_start=t0,
             t_stop=t1,
-            ignore_width=0.05,
-            min_size=0.05,
+            ignore_width=0.005,
+            min_size=0.005,
             fuse_duration=0.01,
             threshold_z=2.0,
             amp_env_mode=self.settings.value("AMP_ENV_ARGS/mode", "broadband")
@@ -683,8 +713,8 @@ class App(widgets.QMainWindow):
                 loaded_wav,
                 window_size=10.0,
                 channel=ch,
-                ignore_width=0.01,
-                min_size=0.01,
+                ignore_width=0.005,
+                min_size=0.005,
                 fuse_duration=0.01,
                 threshold_z=2.0,
                 amp_env_mode=self.settings.value("AMP_ENV_ARGS/mode", "broadband")
@@ -856,6 +886,7 @@ class SpectrogramViewBox(pg.ViewBox):
     """docstring for SpectrogramViewBox."""
     dragComplete = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
     dragInProgress = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
+    clicked = pyqtSignal(QtCore.QPointF)
 
     def mouseDragEvent(self, event):
         event.accept()
@@ -865,6 +896,10 @@ class SpectrogramViewBox(pg.ViewBox):
             self.dragComplete.emit(start_pos, end_pos)
         else:
             self.dragInProgress.emit(start_pos, end_pos)
+
+    def mouseClickEvent(self, event):
+        event.accept()
+        self.clicked.emit(self.mapSceneToView(event.scenePos()))
 
 
 class AudioView(widgets.QWidget):
@@ -897,10 +932,13 @@ class AudioView(widgets.QWidget):
         super().__init__(parent)
         self.loaded_data = AppData()
 
+        self.init_actions()
         self.init_ui()
+        self.setup_shortcuts()
+
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
 
-        self.t_step = self.win_size / 10
+        self.t_step = self.win_size / 40
         # Set up playback line
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance_playback_line)
@@ -913,6 +951,7 @@ class AudioView(widgets.QWidget):
         snippet_selected_signal.connect(self.on_snippet_selected)
         redraw_signal.connect(self.update_image)
         self.range_selected_signal.connect(self.on_range_selected)
+        self.snippet_selected_signal = snippet_selected_signal
 
         self._lowres_preview_only = False
 
@@ -994,25 +1033,126 @@ class AudioView(widgets.QWidget):
         else:
             self.reset_playback_line()
 
-    def on_drag_complete(self, start, end):
-        # Get current page time
-        # Using the spec sample rate, convert start and end to time deltas
-        # Figrue out the absolute times for the drag start and stop
-        # Emit selection event "on_selected_drag"
-        start_dt = start.x() / self.spec_sample_rate
-        end_dt = end.x() / self.spec_sample_rate
-        base_t = self.t_step * self.loaded_data.get("current_step")
-        start_t = base_t + start_dt
-        end_t = base_t + end_dt
-        self.range_selected_signal.emit(start_t, end_t)
+    def _get_drag_mode(self, click_location):
+        """Use the click location to determine how the dragging will affect
+        the selected range
+
+        "move": moves the entire range
+        "left": moves only the left boundary
+        "right": moves only the right boundary
+        "new": creates a new range
+        """
+        if not self.loaded_data.has("selected_range"):
+            return "new", None
+
+        elif self.loaded_data.has("selected_range"):
+            current_range = self.loaded_data.get("selected_range")
+            base_t = self.t_step * self.loaded_data.get("current_step")
+            start_t, end_t = current_range
+            start_idx = int(round((start_t - base_t) * self.spec_sample_rate))
+            end_idx = int(round((end_t - base_t) * self.spec_sample_rate))
+            buffer = (end_idx - start_idx) / 10
+
+            if start_idx + buffer <= click_location.x() <= end_idx - buffer:
+                return "move", (start_idx, end_idx)
+            elif np.abs(start_idx - click_location.x()) < buffer:
+                return "left", start_idx
+            elif np.abs(end_idx - click_location.x()) < buffer:
+                return "right", end_idx
+            else:
+                return "new", None
 
     def on_drag_in_progress(self, start, end):
-        curve_1 = self._draw_drag_curves(self.spectrogram_plot, start, end)
-        curve_2 = self._draw_drag_curves(self.amplitude_plot, start, end)
-        self.drag_curves = {
-            self.spectrogram_plot: curve_1,
-            self.amplitude_plot: curve_2
-        }
+        # Drag can move a range or select a range or clear a range
+        drag_mode, extra = self._get_drag_mode(start)
+
+        dx = end.x() - start.x()
+        self._clear_drag_lines()
+        if drag_mode == "move":
+            start_idx, end_idx = extra
+            self.spectrogram_plot.selected_range_line_start.setValue(start_idx + dx)
+            self.spectrogram_plot.selected_range_line_stop.setValue(end_idx + dx)
+            self.amplitude_plot.selected_range_line_start.setValue(start_idx + dx)
+            self.amplitude_plot.selected_range_line_stop.setValue(end_idx + dx)
+        elif drag_mode == "left":
+            start_idx = extra
+            self.spectrogram_plot.selected_range_line_start.setValue(start_idx + dx)
+            self.amplitude_plot.selected_range_line_start.setValue(start_idx + dx)
+        elif drag_mode == "right":
+            end_idx = extra
+            self.spectrogram_plot.selected_range_line_stop.setValue(end_idx + dx)
+            self.amplitude_plot.selected_range_line_stop.setValue(end_idx + dx)
+        elif drag_mode == "new":
+            curve_1 = self._draw_drag_curves(self.spectrogram_plot, start, end)
+            curve_2 = self._draw_drag_curves(self.amplitude_plot, start, end)
+            self.drag_curves = {
+                self.spectrogram_plot: curve_1,
+                self.amplitude_plot: curve_2
+            }
+
+    def on_drag_complete(self, start, end):
+        dx = 0
+
+        drag_mode, extra = self._get_drag_mode(start)
+
+        if drag_mode == "new":
+            start_dt = start.x() / self.spec_sample_rate
+            end_dt = end.x() / self.spec_sample_rate
+            base_t = self.t_step * self.loaded_data.get("current_step")
+            start_t = base_t + start_dt
+            end_t = base_t + end_dt
+        else:
+            start_t, end_t = self.loaded_data.get("selected_range")
+            base_t = self.t_step * self.loaded_data.get("current_step")
+            dx = end.x() - start.x()
+            if drag_mode == "left":
+                start_idx = extra
+                start_dt = (start_idx + dx) / self.spec_sample_rate
+                new_start_t = base_t + start_dt
+                start_t, end_t = min(new_start_t, end_t), max(new_start_t, end_t)
+            elif drag_mode == "right":
+                end_idx = extra
+                end_dt = (end_idx + dx) / self.spec_sample_rate
+                new_end_t = base_t + end_dt
+                start_t, end_t = min(start_t, new_end_t), max(start_t, new_end_t)
+            elif drag_mode == "move":
+                start_idx, end_idx = extra
+                start_dt = (start_idx + dx) / self.spec_sample_rate
+                end_dt = (end_idx + dx) / self.spec_sample_rate
+                start_t = base_t + start_dt
+                end_t = base_t + end_dt
+
+        self.range_selected_signal.emit(start_t, end_t)
+
+    def _get_clicked_interval(self, click_loc):
+        """Returns the df index of the clicked interval and its bounds
+
+        returns None if the click is outside any known interval"""
+        click_dt = click_loc.x() / self.spec_sample_rate
+        base_t = self.t_step * self.loaded_data.get("current_step")
+        click_t = base_t + click_dt
+
+        intervals = self.loaded_data.get("intervals")
+
+        found = np.where(
+            (intervals["t_start"] <= click_t) &
+            (intervals["t_stop"] >= click_t) &
+            (intervals["channel"] == self.loaded_data.get("view_ch"))
+        )[0]
+        if len(found):
+            return found[0], tuple(intervals.iloc[found[0]][["t_start", "t_stop"]])
+
+    def on_click(self, loc):
+        """Process a click event
+        """
+        clicked = self._get_clicked_interval(loc)
+        self._clear_drag_lines()
+        if clicked is None:
+            self.range_selected_signal.emit(None, None)
+        else:
+            # TODO: might be nicer to have this eventually use
+            #       self.snippet_selected_signal.emit(clicked[0])
+            self.range_selected_signal.emit(clicked[1][0], clicked[1][1])
 
     def _draw_drag_curves(self, plot, start, end):
         pen = pg.mkPen((59, 124, 32, 255))
@@ -1035,9 +1175,9 @@ class AudioView(widgets.QWidget):
             if self.loaded_data.has("selected_range"):
                 self.loaded_data.clear("selected_range")
             self.spectrogram_plot.selected_range_line_start.setValue(-1)
-            self.spectrogram_plot.selected_range_line_start.setValue(-1)
+            self.spectrogram_plot.selected_range_line_stop.setValue(-1)
             self.amplitude_plot.selected_range_line_start.setValue(-1)
-            self.amplitude_plot.selected_range_line_start.setValue(-1)
+            self.amplitude_plot.selected_range_line_stop.setValue(-1)
         else:
             base_t = self.t_step * self.loaded_data.get("current_step")
             start_t, end_t = min(start_t, end_t), max(start_t, end_t)
@@ -1048,6 +1188,10 @@ class AudioView(widgets.QWidget):
             self.spectrogram_plot.selected_range_line_stop.setValue(end_idx)
             self.amplitude_plot.selected_range_line_start.setValue(start_idx)
             self.amplitude_plot.selected_range_line_stop.setValue(end_idx)
+
+    def init_actions(self):
+        self.play_action = gui.QAction("Play Selected Audio")
+        self.play_action.triggered.connect(self.play_audio)
 
     def init_ui(self):
         ### Spectrogram Plot
@@ -1067,7 +1211,6 @@ class AudioView(widgets.QWidget):
         self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_start)
         self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_stop)
         self.spectrogram_plot.hideAxis("left")
-        self.spectrogram_plot.hideAxis("bottom")
         self.spectrogram_plot.hideButtons()  # Gets rid of "A" autorange button
         self.spectrogram_plot.getViewBox().setRange(
             xRange=(0, int(self.win_size * self.spec_sample_rate)),
@@ -1077,6 +1220,8 @@ class AudioView(widgets.QWidget):
         )
         self.spectrogram_viewbox.dragComplete.connect(self.on_drag_complete)
         self.spectrogram_viewbox.dragInProgress.connect(self.on_drag_in_progress)
+        self.spectrogram_viewbox.clicked.connect(self.on_click)
+
         self.drag_curves = {}
 
         self._drawn_intervals = []
@@ -1098,7 +1243,6 @@ class AudioView(widgets.QWidget):
         self.amplitude_plot.addItem(self.amplitude_plot.selected_range_line_start)
         self.amplitude_plot.addItem(self.amplitude_plot.selected_range_line_stop)
         self.amplitude_plot.hideAxis("left")
-        self.amplitude_plot.hideAxis("bottom")
         self.amplitude_plot.hideButtons()  # Gets rid of "A" autorange button
         self.amplitude_plot.getViewBox().setRange(
             xRange=(0, int(self.win_size * self.spec_sample_rate)),
@@ -1108,6 +1252,7 @@ class AudioView(widgets.QWidget):
         )
         self.amplitude_viewbox.dragComplete.connect(self.on_drag_complete)
         self.amplitude_viewbox.dragInProgress.connect(self.on_drag_in_progress)
+        self.amplitude_viewbox.clicked.connect(self.on_click)
 
         # Put the plots in a tab widget
         self.tab_panel = widgets.QTabWidget(self)
@@ -1139,6 +1284,71 @@ class AudioView(widgets.QWidget):
         layout.addStretch(1)
         self.setLayout(layout)
 
+    def setup_shortcuts(self):
+        self.play_shortcut = widgets.QShortcut(gui.QKeySequence("Space"), self)
+        self.play_shortcut.activated.connect(self.play_audio)
+
+        self.delete_shortcut = widgets.QShortcut(gui.QKeySequence.Delete, self)
+        self.delete_shortcut.activated.connect(self.on_delete_selection)
+
+        self.merge_shortcut = widgets.QShortcut(gui.QKeySequence("M"), self)
+        self.merge_shortcut.activated.connect(self.on_merge_selection)
+
+    def on_delete_selection(self):
+        """Delete from [intervals] any intervals that are entirely contained within
+
+        the currently selected range.
+        """
+        if not self.loaded_data.has("selected_range"):
+            return
+
+        if not self.loaded_data.has("intervals"):
+            return
+
+        selection_start, selection_stop = self.loaded_data.get("selected_range")
+        df = self.loaded_data.get("intervals")
+        selector = (
+            ((df["t_start"] >= selection_start) & (df["t_stop"] <= selection_stop)) &
+            (df["channel"] == self.loaded_data.get("view_ch"))
+        )
+        self.loaded_data.set("intervals", df[~selector].copy())
+        self._draw_intervals()
+
+    def on_merge_selection(self):
+        if not self.loaded_data.has("selected_range"):
+            return
+
+        if not self.loaded_data.has("intervals"):
+            return
+
+        selection_start, selection_stop = self.loaded_data.get("selected_range")
+        df = self.loaded_data.get("intervals")
+        selector = (
+            ((df["t_start"] >= selection_start) & (df["t_stop"] <= selection_stop)) &
+            (df["channel"] == self.loaded_data.get("view_ch"))
+        )
+
+        if not len(df[selector]):
+            return
+
+        # Merge those selected into a single row
+        # First: make a new df with the non-selected rows
+        new_df = df[~selector].copy()
+
+        # Second: Create a single row encapsulating the selected intervals
+        new_row = {
+            "t_start": np.min(df[selector]["t_start"]),
+            "t_stop": np.max(df[selector]["t_stop"]),
+            "channel": self.loaded_data.get("view_ch")
+        }
+
+        # Third: Add the row to the dataframe and resort by t_start
+        new_df = new_df.append([new_row], ignore_index=False, sort=True)
+        new_df = new_df.sort_values(by="t_start")
+
+        self.loaded_data.set("intervals", new_df)
+        self._draw_intervals()
+
     def on_slider_press(self):
         self._lowres_preview_only = True
 
@@ -1152,6 +1362,7 @@ class AudioView(widgets.QWidget):
         self._set_n_channels(self.loaded_data.get("wav").n_channels)
 
     def on_snippet_selected(self, idx):
+        raise Exception("Function must be updated to work with DataFrames")
         t0, t1 = self.loaded_data.get("intervals")[idx]
         midpoint = np.mean([t0, t1])
         approx_start_time = midpoint - (self.win_size / 2)
@@ -1193,6 +1404,30 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setValue(new_value)
         self.update_image(lowres=self._lowres_preview_only)
         self._update_time_label()
+        self._draw_intervals()
+        self._draw_xaxis()
+
+    def _nice_tick_spacing(self, win_size):
+        """Compute a nice tick spacing for the given window size
+        """
+        if win_size < 60:
+            first_guess = win_size / 10
+
+        choices = [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
+        best_choice = np.searchsorted(choices, first_guess)
+        return choices[best_choice]
+
+    def _draw_xaxis(self):
+        ax = self.spectrogram_plot.getAxis("bottom")
+        base_t = self.t_step * self.loaded_data.get("current_step")
+
+        ticks = []
+        spacing = self._nice_tick_spacing(self.win_size)
+        for t in np.arange(0.0, self.win_size, spacing):
+            samples = int(np.round(t * self.spec_sample_rate))
+            ticks.append([samples, np.around(base_t + t, 2)])
+
+        ax.setTicks([ticks])
 
     def update_image(self, lowres=False):
         t1 = self.t_step * self.loaded_data.get("current_step")
