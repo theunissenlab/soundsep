@@ -16,6 +16,7 @@ class SpectrogramViewBox(pg.ViewBox):
     dragInProgress = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
     clicked = pyqtSignal(QtCore.QPointF)
     menuSelection = pyqtSignal(object)
+    zoomEvent = pyqtSignal(int, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,3 +70,14 @@ class SpectrogramViewBox(pg.ViewBox):
             self.clicked.emit(self.mapSceneToView(event.scenePos()))
         else:
             super().mouseClickEvent(event)
+
+    def wheelEvent(self, event):
+        """Emits the direction of scroll nad the location in fractional position"""
+        pos = self.mapSceneToView(event.scenePos())
+        xmax = self.viewRange()[0][1]
+        ymax = self.viewRange()[1][1]
+        xy = (pos.x() / xmax, pos.y() / ymax)
+        if event.delta() > 0:
+            self.zoomEvent.emit(1, xy)
+        elif event.delta() < 0:
+            self.zoomEvent.emit(-1, xy)

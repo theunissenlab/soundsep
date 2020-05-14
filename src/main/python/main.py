@@ -29,6 +29,11 @@ class Events(widgets.QWidget):
     rangeChanged = pyqtSignal()
     dataLoaded = pyqtSignal()
     rangeSelected = pyqtSignal(object, object)
+    rangeHighlighted = pyqtSignal(object, object)
+    setPosition = pyqtSignal([object], [object, object])
+    zoomEvent = pyqtSignal([int], [int, float])
+    setBusy = pyqtSignal(bool)
+
 
 class App(widgets.QMainWindow):
     """Main App instance with logic for file read/write
@@ -56,7 +61,7 @@ class App(widgets.QMainWindow):
         self.open_directory_action.triggered.connect(self.run_directory_loader)
 
         self.open_recent_actions = []
-        for i in range(read_default(self.settings, "MAX_RECENT_FILES")):
+        for i in range(read_default.MAX_RECENT_FILES):
             action = widgets.QAction("", self)
             action.setVisible(False)
             action.triggered.connect(partial(self.open_recent, i))
@@ -86,7 +91,7 @@ class App(widgets.QMainWindow):
         fileMenu = mainMenu.addMenu("&File")
         fileMenu.addAction(self.open_directory_action)
         self.openRecentMenu = fileMenu.addMenu("&Open Recent")
-        for i in range(read_default(self.settings, "MAX_RECENT_FILES")):
+        for i in range(read_default.MAX_RECENT_FILES):
             self.openRecentMenu.addAction(self.open_recent_actions[i])
         fileMenu.addSeparator()
         fileMenu.addAction(self.save_action)
@@ -105,7 +110,7 @@ class App(widgets.QMainWindow):
 
     def update_open_recent_actions(self):
         recently_opened = self.settings.value("OPEN_RECENT", [])
-        for i in range(read_default(self.settings, "MAX_RECENT_FILES")):
+        for i in range(read_default.MAX_RECENT_FILES):
             if i < len(recently_opened):
                 self.open_recent_actions[i].setText(recently_opened[-i])
                 self.open_recent_actions[i].setData(recently_opened[-i])
@@ -158,7 +163,7 @@ class App(widgets.QMainWindow):
             open_recent.pop(idx)
             open_recent.append(dir)
 
-        max_recent = read_default(self.settings, "MAX_RECENT_FILES")
+        max_recent = read_default.MAX_RECENT_FILES
         open_recent = open_recent[-max_recent:]
         self.settings.setValue("OPEN_RECENT", open_recent)
         self.update_open_recent_actions()
