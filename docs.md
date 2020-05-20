@@ -12,9 +12,13 @@ Stores application state. Persists when the application is reloaded.
 #### API
 
 `.reset()`: Reset all keys
+
 `.set(key, value)`: Set a state value
+
 `.get(key, default)`: Get a key. If it doesn't exist, use default
+
 `.has(key)`: Returns bool indicating the key is set in the state
+
 `.clear(key)`: Remove a key from the state
 
 #### Keys
@@ -33,9 +37,13 @@ Stores state of current audio view including visible time range information and 
 #### API
 
 `.reset()`: Reset all keys
+
 `.set(key, value)`: Set a state value
+
 `.get(key, default)`: Get a key. If it doesn't exist, use default
+
 `.has(key)`: Returns bool indicating the key is set in the state
+
 `.clear(key)`: Remove a key from the state
 
 #### Keys
