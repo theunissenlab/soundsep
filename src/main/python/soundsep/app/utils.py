@@ -83,3 +83,46 @@ class TimeScrollManager(object):
 
     def page_times(self):
         return self.pages() * self.page_size
+
+
+class ThresholdAdjuster(object):
+    """
+    Some of the functions for selecting vocal intervals involves increasing
+    or decreasing a threshold in a given range, or increasing or decreasing
+    the fuse duration (for declaring nearby threshold crossings part of the
+    same vocalizations).
+
+    These values are not saved for every interval and can change depending
+    on what range of data the user is currently selecting. So these are some
+    helper functions that read in an amplitude envelope and known intervals
+    (by index), estimate what a reasonable threshold / fuse duration "would
+    have been", and adjust it for you.
+    """
+    def __init__(self, t_arr, y_data, intervals):
+        self.t_arr = t_arr  # time axis
+        self.y_data = y_data  # y axis
+        self.intervals = intervals  # dataframe with columns "t_start" and "t_stop"
+
+    def estimate(self):
+        """Give estimated points for going down or up"""
+        endpoint_values = []
+        interval_max_values = []
+        all_selector = np.zeros(len(self.t_arr)).astype(np.bool)
+
+        if not len(self.intervals):
+            return
+
+        for idx in np.arange(len(self.intervals)):
+            t1, t2 = self.intervals.iloc[idx][["t_start", "t_stop"]]
+            selector = (self.t_arr <= t2) & (self.t_arr >= t1)
+            all_selector = all_selector | selector
+            endpoints = self.y_data[selector][[0, -1]]
+            endpoint_values.append(endpoints[0])
+            endpoint_values.append(endpoints[1])
+            interval_max_values.append(np.max(self.y_data[selector]))
+
+        bottom = np.mean(self.y_data[~all_selector])
+        threshold = np.mean(endpoint_values)
+        top = np.mean(interval_max_values)
+
+        return 0.9 * threshold, threshold, 1.1 * threshold

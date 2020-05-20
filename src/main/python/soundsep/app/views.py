@@ -14,6 +14,7 @@ from PyQt5 import QtWidgets as widgets
 
 from soundsig.sound import spectrogram
 
+from audio_utils import get_amplitude_envelope
 from detection.thresholding import threshold_all_events, threshold_events, fuse_events
 
 from app.components import SpectrogramViewBox
@@ -842,13 +843,18 @@ class SourceView(widgets.QWidget):
         if shortcut == "W":
             self.on_find_in_selection(0)
         elif shortcut == "Shift+W":
-            self.on_find_in_selection(0, mode="max_zscore")
+            self.on_find_in_selection(1)
         elif shortcut == "X":
             self.on_delete_selection()
+        elif shortcut == "S":
+            self.on_find_in_selection(0)
+        elif shortcut == "Shift+S":
+            self.on_find_in_selection(-1)
         elif shortcut == "Q":
-            pass
+            # merge
+            self.on_merge_selection()
         elif shortcut == "Z":
-            pass
+            self.on_find_in_selection(0, mode="max_zscore")
 
     def on_zoom(self, direction, pos):
         """Pass the zoom signal up to the AudioView
@@ -1006,10 +1012,10 @@ class SourceView(widgets.QWidget):
         else:
             old_count = 0
 
-        # (1) Search by amplitude threshold
-        if self.view_state.has("selected_threshold_line"):
+        if self.view_state.has("selected_threshold_line") and old_count == 0:
+            # (1) Search by amplitude threshold
             y0, y1 = self.view_state.get("selected_threshold_line")
-            # Map the xdata onto times
+            # Map the xdata onto time values
             m = (y1 - y0) / (t1 - t0)
             b = y0 - t0 * m
             def _thresh(t):
@@ -1030,13 +1036,15 @@ class SourceView(widgets.QWidget):
                 fuse_duration=2
             )
             events = [
-                [tdata[range_selector][e[0]], tdata[range_selector][e[1]]]
+                [tdata[range_selector][e[0]], tdata[range_selector][e[1] - 1]]
                 for e in events
             ]
-        # (2) Search by frequency band selected
-        else:
-            y0, y1 = self.view_state.get("selected_spec_range")
-            print(y0, y1)
+        elif modify == 0 or old_count == 0:
+            # (2) Search by frequency band selected
+            if self.view_state.has("selected_spec_range"):
+                y0, y1 = self.view_state.get("selected_spec_range")
+            else:
+                y0, y1 = 1000.0, 8000.0
             events = threshold_all_events(
                 self.state.get("sound_object"),
                 window_size=None,
@@ -1051,6 +1059,42 @@ class SourceView(widgets.QWidget):
                 lowpass=y1,
                 amp_env_mode=mode
             )
+        elif modify in (-1, 1):
+            # if self.view_state.has("selected_spec_range"):
+            #     y0, y1 = self.view_state.get("selected_spec_range")
+            # else:
+            y0, y1 = 1000.0, 8000.0
+            # use a lower / higher threshold
+            t_arr, sig = self.state.get("sound_object").time_slice(t0, t1)
+            t_arr += t0
+            sig -= np.mean(sig, axis=0)
+
+            amp_env = get_amplitude_envelope(
+                sig[:, self.source["channel"]],
+                fs=self.state.get("sound_object").sampling_rate,
+                highpass=y0,
+                lowpass=y1,
+                rectify_lowpass=200.0,
+                mode="broadband"
+            )
+
+            threshold_adjuster = ThresholdAdjuster(t_arr, amp_env, df[selector])
+            low, mid, high = threshold_adjuster.estimate()
+            threshold = low if modify == 1 else high
+
+            events = threshold_events(
+                amp_env,
+                threshold,
+                polarity=1,
+                sampling_rate=self.state.get("sound_object").sampling_rate,
+                ignore_width=0.005,
+                min_size=0.005,
+                fuse_duration=0.01,
+            )
+            events = [
+                [t_arr[e[0]], t_arr[e[1] - 1]]
+                for e in events
+            ]
 
         # Replaces the relevant rows in the dataframe
         new_rows = [{
@@ -1088,9 +1132,42 @@ class SourceView(widgets.QWidget):
             ((df["t_start"] >= selection_start) & (df["t_stop"] <= selection_stop)) |
             ((df["t_start"] < selection_stop) & (df["t_stop"] > selection_stop)) |
             ((df["t_start"] < selection_start) & (df["t_stop"] > selection_start))
-
         )
         self.source["intervals"] = df[~selector].copy()
+        self._draw_intervals()
+
+    def on_merge_selection(self):
+        if not self.view_state.has("selected_range"):
+            return
+        if "intervals" not in self.source:
+            return
+
+        selection_start, selection_stop = self.view_state.get("selected_range")
+        df = self.source["intervals"]
+        selector = (
+            ((df["t_start"] >= selection_start) & (df["t_stop"] <= selection_stop)) |
+            ((df["t_start"] < selection_stop) & (df["t_stop"] > selection_stop)) |
+            ((df["t_start"] < selection_start) & (df["t_stop"] > selection_start))
+        )
+
+        if not len(df[selector]):
+            return
+
+        # Merge those selected into a single row
+        # First: make a new df with the non-selected rows
+        new_df = df[~selector].copy()
+
+        # Create a single row encapsulating the selected intervals
+        new_row = {
+            "t_start": np.min(df[selector]["t_start"]),
+            "t_stop": np.max(df[selector]["t_stop"]),
+        }
+
+        # Add the row to the dataframe and resort by t_start
+        new_df = new_df.append([new_row], ignore_index=False, sort=True)
+        new_df = new_df.sort_values(by="t_start")
+
+        self.source["intervals"] = new_df.copy()
         self._draw_intervals()
 
     def _update_highlighted_range(self):
@@ -1151,9 +1228,9 @@ class SourceView(widgets.QWidget):
 
                 rect = gui.QGraphicsRectItem(
                     xmin + (start_frac * (xmax - xmin)),
-                    ymax - (3 * ymax / 80),
+                    ymax - (3 * ymax / 40),
                     duration_frac * (xmax - xmin),
-                    ymax / 40
+                    ymax / 20
                 )
                 rect.setPen(pg.mkPen(None))
                 rect.setBrush(pg.mkBrush("r"))

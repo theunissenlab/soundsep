@@ -6,6 +6,7 @@ import os
 from functools import partial
 
 import numpy as np
+import pandas as pd
 from PyQt5.QtCore import (Qt, QObject, QProcess, QSettings, QThread, QTimer,
         pyqtSignal, pyqtSlot)
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
@@ -44,9 +45,11 @@ class App(widgets.QMainWindow):
         "Shift+A",
         "D",
         "Shift+D",
-        "E"
+        "E",
         "M",
         "Q",
+        "S",
+        "Shift+S",
         "W",
         "Shift+W",
         "X",
@@ -86,6 +89,8 @@ class App(widgets.QMainWindow):
         self.save_action.triggered.connect(self.save)
         self.quit_action = widgets.QAction("Close", self)
         self.quit_action.triggered.connect(self.close)
+        self.export_action = widgets.QAction("Export Intervals", self)
+        self.export_action.triggered.connect(self.export)
 
         self.save_shortcut = widgets.QShortcut(gui.QKeySequence.Save, self)
         self.save_shortcut.activated.connect(self.save)
@@ -120,6 +125,7 @@ class App(widgets.QMainWindow):
         for i in range(read_default.MAX_RECENT_FILES):
             self.openRecentMenu.addAction(self.open_recent_actions[i])
         fileMenu.addSeparator()
+        fileMenu.addAction(self.export_action)
         fileMenu.addAction(self.save_action)
         fileMenu.addSeparator()
         fileMenu.addAction(self.quit_action)
@@ -257,6 +263,39 @@ class App(widgets.QMainWindow):
             "Saved",
             "Saved successfully.",
         )
+
+    def export(self):
+        # Save the sources to a pandas dataframe
+        if not self.state.has("sources"):
+            widgets.QMessageBox.about(self, "!", "No sources to export")
+
+        rows = []
+        for source in self.state.get("sources"):
+            if isinstance(source.get("intervals"), pd.DataFrame):
+                df = source.get("intervals")
+                for i in np.arange(len(df)):
+                    t0, t1 = df.iloc[i][["t_start", "t_stop"]]
+                    rows.append([source["name"], source["channel"], t0, t1])
+
+        df = pd.DataFrame(rows, columns=["source_name", "source_channel", "t_start", "t_stop"])
+
+        options = widgets.QFileDialog.Options()
+        file_name, _ = widgets.QFileDialog.getSaveFileName(
+            self,
+            "Export data",
+            os.path.join(self.state.get("sound_file"), "intervals.pkl"),
+            "*",
+            options=options)
+        if not file_name:
+            return
+        else:
+            df.to_pickle(file_name)
+            widgets.QMessageBox.about(
+                self,
+                "Exported",
+                "Exported successfully.",
+            )
+
 
 
 if __name__ == '__main__':
