@@ -56,16 +56,41 @@ Stores state of current audio view including visible time range information and 
 
 
 ## Usage
-TBD
+This GUI is designed to make it easy to segment vocalizations across multiple channels from multiple experimental sources.
 
 ### Data selection
-TBD
+An audio period can be selected by clicking and dragging on the spectrogram window. When Amp Env view is on, you drag a threshold line across the amplitude envelope shown. When Amp Env view is off, you select a region of time-frequency space. This region is used to detect individual vocal intervals. Clicking again (not dragging) on the spectrogram will clear the current selection.
 
-### Vocalization selection
+### Keyboard Shortcuts
+The keyboard shortcuts in this are designed to have your left hand on the keyboard:
+```
+Q W E
+ A S D
+  Z X            M
+```
+and your right hand on the mouse.
+
+`A` and `D`: Move earlier and later in time
+
+`W` and `S`: Automatically segment into calls (both do the same)
+
+`Q`: Merge selected segments
+
+`E`: Toggle between amplitude envelope mode on/off
+
+`Z`: Automatically segment into calls (better in broadband noise)
+
+`X`: Delete calls in selected time range
+
+`Shift+W`, `SHIFT+S`: Increase and decrease (respectively) the amplitude envelope threshold value used in this section
+
+`M`: Toggle between automatic dragging mode (click and drag selection automatically triggers call segmentation when released)
+
+### Vocalization detection
 TBD
 
 ### Data export
-TBD
+Data is exported into a pandas DataFrame saved in a pickle file. The data has columns "source_name", "source_channel", "t_start", and "t_stop" for all labeled intervals.
 
 ## API / Extensions
 TBD
