@@ -1,5 +1,7 @@
 from functools import partial
+import uuid
 
+import pandas as pd
 import pyqtgraph as pg
 import numpy as np
 from PyQt5.QtCore import (Qt, QObject, QProcess, QSettings, QThread, QTimer,
@@ -12,13 +14,14 @@ from PyQt5 import QtWidgets as widgets
 
 from soundsig.sound import spectrogram
 
-from detection.thresholding import threshold_all_events
+from detection.thresholding import threshold_all_events, threshold_events, fuse_events
 
 from app.components import SpectrogramViewBox
 from app.state import AppState, ViewState
 from app.settings import fonts, read_default
 from app.style import qss
-from app.utils import TimeScrollManager
+from app.utils import TimeScrollManager, ThresholdAdjuster
+from app.workers import SpectrogramWorker
 
 
 class MainView(widgets.QWidget):
@@ -34,8 +37,6 @@ class MainView(widgets.QWidget):
         self.init_nested_views()
 
         self.events.dataLoaded.connect(self.on_data_load)
-        self.events.createSource.connect(self.on_create_source)
-        self.events.setBusy.connect(self.on_set_busy)
 
     def init_ui(self):
         self.topBar = widgets.QHBoxLayout()
@@ -43,13 +44,6 @@ class MainView(widgets.QWidget):
         self.topBarLabel.setDisabled(True)
         self.topBar.addWidget(self.topBarLabel)
         self.topBar.addStretch(1)
-
-        self.busyIndicator = widgets.QLabel()
-        busyGif = gui.QMovie("images/loading_icon.gif")
-        busyGif.setScaledSize(QtCore.QSize(16, 16))
-        self.busyIndicator.setMovie(busyGif)
-        self.busyIndicator.setAlignment(QtCore.Qt.AlignRight)
-        busyGif.start()
 
         self.topLeftBox = widgets.QGroupBox("Sources")
         self.topRightBox = widgets.QGroupBox("Sound Viewer")
@@ -68,7 +62,6 @@ class MainView(widgets.QWidget):
 
         self.mainLayout = widgets.QGridLayout()
         self.mainLayout.addLayout(self.topBar, 0, 0)
-        self.mainLayout.addWidget(self.busyIndicator, 0, 5, 1, 1)
 
         self.mainLayout.addWidget(self.topSplitter, 1, 0, 1, 6)
         self.mainLayout.addWidget(self.bottomBox, 2, 0, 1, 6)
@@ -108,14 +101,93 @@ class MainView(widgets.QWidget):
         )
         self.tab_panel.addTab(self.vocal_periods_view, "Vocal Periods")
 
-    def on_set_busy(self, busy):
-        self.busyIndicator.setVisible(busy)
+    def on_data_load(self):
+        self.topLeftBox.setDisabled(False)
+        self.topRightBox.setDisabled(False)
+        self.topBarLabel.setText(self.state.get("sound_file"))
+
+
+class SourceManagerView(widgets.QScrollArea):
+    """List view of sources and editing options
+
+    A "Source" is a sound source in the current study. For example, one
+    vocalizing individual. A source is associated with a channel. Multiple
+    sources can be associated with the same channel, it is up to the user
+    to distinguish them.
+    """
+    def __init__(self, parent=None, events=None):
+        super().__init__(parent)
+        self.state = AppState()
+        self.events = events
+
+        self.init_ui()
+
+        self.events.sourcesChanged.connect(self.on_sources_changed)
+        self.events.dataLoaded.connect(self.on_sources_changed)
+        self.events.createSource.connect(self.on_create_source)
+
+    def init_ui(self):
+        self.mainLayout = widgets.QVBoxLayout()
+
+        self.currentSourcesLayout = widgets.QVBoxLayout()
+        self.addSourceButton = widgets.QToolButton()
+        addIcon = gui.QIcon("images/plus_icon.svg")
+        self.addSourceButton = widgets.QToolButton(self)
+        self.addSourceButton.setIcon(addIcon)
+        self.addSourceButton.setToolTip("Create a new source")
+        self.addSourceButton.setFixedWidth(50)
+        self.addSourceButton.clicked.connect(self.add_source)
+
+        self.mainLayout.addLayout(self.currentSourcesLayout)
+        self.mainLayout.addStretch()
+        self.mainLayout.addWidget(self.addSourceButton)
+        self.setLayout(self.mainLayout)
+
+    def add_source(self):
+        """Create a new source with a blank title in edit mode and incremented
+        to a channel that isn't used yet (if any)
+        """
+        current_channels = [s["channel"] for s in self.state.get("sources")]
+        for ch in range(self.state.get("sound_object").n_channels):
+            if ch not in current_channels:
+                new_channel = ch
+                break
+        else:
+            new_channel = 0
+
+        self.events.createSource.emit({
+            "name": "new{}".format(len(current_channels) + 1),
+            "channel": new_channel,
+            "hidden": False
+        })
+
+    def on_sources_changed(self):
+        """Repopulate the list with the current sources
+        """
+        for i in reversed(range(self.currentSourcesLayout.count())):
+            item = self.currentSourcesLayout.itemAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for i, source in enumerate(self.state.get("sources")):
+            new_widget = SourceEditorView(
+                self,
+                source_idx=i,
+                events=self.events)
+            self.currentSourcesLayout.addWidget(new_widget)
 
     def on_create_source(self, source_dict):
+        """
+        This is a separate function from add_source() because originally
+        add_source opened a separate window and needed to trigger
+        the actual creation of the source to emit sourcesChanged. This could
+        be consolidated...
+        """
         sources = self.state.get("sources")
         if sources is None:
             self.state.set("sources", [])
             sources = self.state.get("sources")
+
         # check if name is unique
         if source_dict["name"] in [s["name"] for s in sources]:
             widgets.QMessageBox.warning(
@@ -132,96 +204,12 @@ class MainView(widgets.QWidget):
         })
         self.events.sourcesChanged.emit()
 
-    def on_data_load(self):
-        self.topLeftBox.setDisabled(False)
-        self.topRightBox.setDisabled(False)
-        self.topBarLabel.setText(self.state.get("sound_file"))
-
-
-class SourceManagerView(widgets.QScrollArea):
-
-    def __init__(self, parent=None, events=None):
-        super().__init__(parent)
-        self.state = AppState()
-        self.events = events
-
-        self.init_ui()
-
-        self.events.sourcesChanged.connect(self.on_sources_changed)
-        self.events.dataLoaded.connect(self.on_sources_changed)
-
-    def init_ui(self):
-        self.mainLayout = widgets.QVBoxLayout()
-
-        self.currentSourcesLayout = widgets.QVBoxLayout()
-        self.addSourceButton = widgets.QToolButton()
-        addIcon = gui.QIcon("images/plus_icon.svg")
-        self.addSourceButton = widgets.QToolButton(self)
-        self.addSourceButton.setIcon(addIcon)
-        self.addSourceButton.setToolTip("Create a new source")
-        self.addSourceButton.setFixedWidth(50)
-        self.addSourceButton.clicked.connect(self.show_add_source_window)
-
-        # self.mainLayout.addLayout(self.headingLayout)
-        self.mainLayout.addLayout(self.currentSourcesLayout)
-        self.mainLayout.addStretch()
-        self.mainLayout.addWidget(self.addSourceButton)
-        self.setLayout(self.mainLayout)
-
-    def on_sources_changed(self):
-        for i in reversed(range(self.currentSourcesLayout.count())):
-            item = self.currentSourcesLayout.itemAt(i)
-            if item.widget():
-                item.widget().deleteLater()
-
-        for i, source in enumerate(self.state.get("sources")):
-            new_widget = SourceEditorView(
-                self,
-                source_idx=i,
-                events=self.events)
-            self.currentSourcesLayout.addWidget(new_widget)
-
-    def show_add_source_window(self):
-        self.dialog = widgets.QDialog(self)
-
-        layout = widgets.QGridLayout()
-        nameLabel = widgets.QLabel(self, text="Name")
-        self.nameInput = widgets.QLineEdit(self, text="")
-        layout.addWidget(nameLabel, 0, 0)
-        layout.addWidget(self.nameInput, 0, 1)
-
-        channelLabel = widgets.QLabel(self, text="Channel")
-        self.channelInput = widgets.QComboBox(self)
-        for ch in range(self.state.get("sound_object").n_channels):
-            self.channelInput.addItem(str(ch), ch)
-        layout.addWidget(channelLabel, 1, 0)
-        layout.addWidget(self.channelInput, 1, 1)
-
-        submitButton = widgets.QPushButton("Submit")
-        layout.addWidget(submitButton, 2, 1)
-        submitButton.clicked.connect(self.submit)
-
-        self.dialog.setLayout(layout)
-        self.dialog.setWindowTitle("Create Source")
-        self.dialog.setMinimumWidth(500)
-        self.dialog.setMaximumWidth(self.dialog.width())
-        self.dialog.setMaximumHeight(self.dialog.height())
-        self.dialog.show()
-
-    def submit(self):
-        name = self.nameInput.text()
-        channel = self.channelInput.currentIndex()
-
-        self.events.createSource.emit({
-            "name": name,
-            "channel": channel,
-            "hidden": False
-        })
-        self.dialog.close()
-
 
 class SourceEditorView(widgets.QWidget):
     """Display of source information and options to edit/delete/hide/show
+
+    One of these is created for each source and created in the
+    SourceManagerView
     """
     editModeChanged = pyqtSignal(bool)
 
@@ -238,7 +226,7 @@ class SourceEditorView(widgets.QWidget):
         self.mainLayout = widgets.QHBoxLayout(self)
 
         self.nameInput = widgets.QLineEdit(self, text=self.source["name"])
-        self.nameInput.setStyleSheet("QLineEdit { qproperty-cursorPosition: 0; }");
+        self.nameInput.setStyleSheet("QLineEdit {qproperty-cursorPosition: 0;}");
         self.channelInput = widgets.QComboBox(self)
         for ch in range(self.state.get("sound_object").n_channels):
             self.channelInput.addItem(str(ch), ch)
@@ -249,6 +237,7 @@ class SourceEditorView(widgets.QWidget):
         editIcon = gui.QIcon("images/edit_icon.svg")
         self.editButton = widgets.QToolButton(self)
         self.editButton.setIcon(editIcon)
+        self.editButton.setToolTip("Edit source name/channel")
         self.editButton.setCheckable(True)
         deleteIcon = gui.QIcon("images/delete_icon.svg")
         self.deleteButton = widgets.QToolButton(self)
@@ -275,18 +264,30 @@ class SourceEditorView(widgets.QWidget):
 
     def toggle_edit_mode(self):
         if self.editButton.isChecked():
+            self.editButton.setToolTip("Submit changes [Return]")
             self.nameInput.setDisabled(False)
             self.channelInput.setDisabled(False)
         else:
+            self.editButton.setToolTip("Edit source name/channel")
+            if self.nameInput.text() == "":
+                widgets.QMessageBox.warning(
+                    self,
+                    "Error",
+                    "Cannot leave source name blank",
+                )
+                return
+
             self.nameInput.setDisabled(True)
             self.channelInput.setDisabled(True)
             self.repaint()
             new_name = self.nameInput.text()
             new_channel = self.channelInput.currentIndex()
-            if self.source["name"] == new_name and self.source["channel"] == new_channel:
+            if (self.source["name"] == new_name and
+                    self.source["channel"] == new_channel):
+                # no changes were made
                 return
             else:
-                self.source["name"] = new_name
+                self.source["name"] = new_name or self.source["name"]
                 self.source["channel"] = new_channel
                 self.events.sourcesChanged.emit()
 
@@ -330,9 +331,10 @@ class AudioView(widgets.QWidget):
         # Timer to turn on/off low resolution views.
         # When the timer goes off, redraw in high resolution
         # Set with set_lowres(secs)
+        self._last_spec_key = None
         self._lowres_timer = QtCore.QTimer()
+        self.thread = None
 
-        self.state.set("lowres_preview", False)
         self.source_view_registry = {}
 
         self.events.setPosition[object].connect(self.on_set_position)
@@ -342,12 +344,32 @@ class AudioView(widgets.QWidget):
         self.events.dataLoaded.connect(self.on_data_loaded)
         self.events.zoomEvent[int].connect(self.on_zoom)
         self.events.zoomEvent[int, float].connect(self.on_zoom)
+        self.events.triggerShortcut.connect(self.on_shortcut)
+
+        # Timer for having a delay on computing the full spectrogram.
+        # If the user is scrolling through time, don't want to compute
+        # the full resolution spectrogram constantly.
         self._lowres_timer.timeout.connect(self.on_lowres_timer)
 
     def init_ui(self):
         self.mainLayout = widgets.QVBoxLayout()
 
         self.topBarLayout = widgets.QHBoxLayout()
+
+        self.showAmpenvToggle = widgets.QPushButton("Show Ampenv")
+        self.showAmpenvToggle.setCheckable(True)
+        self.autoSearchToggle = widgets.QPushButton("Auto Search on Drag")
+        self.autoSearchToggle.setCheckable(True)
+        if self.state.has("autosearch"):
+            self.autoSearchToggle.toggle()
+
+        self.topBarLayout.addWidget(self.showAmpenvToggle)
+        self.topBarLayout.addWidget(self.autoSearchToggle)
+
+        self.topBarLayout.addStretch()
+        self.showAmpenvToggle.clicked.connect(self.on_show_ampenv)
+        self.autoSearchToggle.clicked.connect(self.on_auto_search)
+
         self.currentSourcesLayout = widgets.QVBoxLayout()
 
         self.scrollbar = widgets.QScrollBar(Qt.Horizontal, self)
@@ -355,9 +377,7 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setMinimum(0)
         self.scrollbar.setMaximum(100)
 
-        self.scrollbar.sliderPressed.connect(self.on_slider_press)
         self.scrollbar.valueChanged.connect(self.on_scrollbar_value_change)
-        self.scrollbar.sliderReleased.connect(self.on_slider_release)
 
         self.windowInfoLayout = widgets.QHBoxLayout()
         self.time_label = widgets.QLabel()
@@ -373,6 +393,8 @@ class AudioView(widgets.QWidget):
         self.setLayout(self.mainLayout)
 
     def _update_scroll_bar(self):
+        """Set the scrollbar parameters
+        """
         steps = self.timescroll_manager.pages()
         self.scrollbar.setValue(0)
         self.scrollbar.setMinimum(0)
@@ -384,11 +406,65 @@ class AudioView(widgets.QWidget):
         t1, t2 = self.view_state.get("current_range")
         self.time_label.setText("{:.2f}s - {:.2f}s".format(t1, t2))
 
+    def _reset_thread(self):
+        if self.thread is not None:
+            self.thread.exit()
+        self.thread = QThread(self)
+        return self.thread
+
+    def closeEvent(self):
+        if self.thread is not None:
+            self.thread.stop()
+
+    def on_shortcut(self, shortcut):
+        """Handle keyboard shortcuts"""
+        if shortcut in ("A", "D"):
+            # Shortcuts for moving forward and back in time.
+            frac = read_default.KEYBOARD_TIME_STEP_FRACTION
+            current_page = self.scrollbar.value()
+            if shortcut == "A":
+                new_page = max(
+                    current_page - self.timescroll_manager.page_step / frac,
+                    0
+                )
+            elif shortcut == "D":
+                new_page = min(
+                    current_page + self.timescroll_manager.page_step / frac,
+                    self.timescroll_manager.pages()[-1]
+                )
+            self.scrollbar.setValue(new_page)
+        elif shortcut == "E":
+            # Shortcut for toggling amplitude envelope mode
+            self.showAmpenvToggle.toggle()
+            self.on_show_ampenv()
+        elif shortcut == "M":
+            # Shortcut for toggling autosearch mode
+            self.autoSearchToggle.toggle()
+            self.on_auto_search()
+
+    def on_show_ampenv(self):
+        if self.showAmpenvToggle.isChecked():
+            self.view_state.set("show_ampenv", True)
+        else:
+            self.view_state.clear("show_ampenv")
+        self.on_redraw()
+
+    def on_auto_search(self):
+        if self.autoSearchToggle.isChecked():
+            self.state.set("autosearch", True)
+        else:
+            self.state.clear("autosearch")
+
     def on_lowres_timer(self):
+        """Draw the spectrogram in full hi resolution"""
         self.on_redraw(lowres_timeout=0)
 
     def on_zoom(self, direction, pos=None):
-        """Adjust the window size"""
+        """Adjust the window size and reposition window.
+
+        direction: +1 or -1 for zoom in/out
+        pos: x location (time) where the cursor is zooming
+        """
         if pos:
             time_center = pos
             frac = (pos - self.view_state.get("current_range")[0]) / read_default.WINDOW_SIZE
@@ -416,14 +492,10 @@ class AudioView(widgets.QWidget):
         if pos:
             self.events.setPosition[object, object].emit(time_center, frac)
         else:
-            self.events.setPosition[object, object].emit(time_center, TimeScrollManager.ALIGN_CENTER)
-
-    def on_slider_press(self):
-        self.state.set("lowres_preview", True)
-
-    def on_slider_release(self):
-        self.state.set("lowres_preview", False)
-        self.on_scrollbar_value_change(self.scrollbar.value())
+            self.events.setPosition[object, object].emit(
+                time_center,
+                TimeScrollManager.ALIGN_CENTER
+            )
 
     def set_page(self, page):
         """Generic way update the range and emit the rangeChanged event
@@ -475,17 +547,28 @@ class AudioView(widgets.QWidget):
         self._update_time_label()
         self.on_redraw()
 
-    def on_redraw(self, lowres_timeout=1000):
+    def on_redraw(self, lowres_timeout=500):
+        """Computes spectrogram values for the current viewable window
+
+        If lowres_timeout is passed, render the low resolution version of the
+        spectrograms (fast), while also kicking off a timer for
+        lowres_timeout (ms). After the timeout, a background job for the high
+        resolution spectrogram will be started.
+        """
         self._lowres_timer.stop()
-        channels = np.unique([sv.source["channel"] for sv in self.source_view_registry])
+        channels = np.unique([
+            sv.source["channel"] for sv in self.source_view_registry
+            if sv.source["hidden"] == False
+        ])
 
         spec_results = {}
-        for ch in channels:
-            t1, t2 = self.view_state.get("current_range")
-            t_arr, sig = self.state.get("sound_object").time_slice(t1, t2)
-            sig -= np.mean(sig, axis=0)
 
-            if lowres_timeout:
+        t1, t2 = self.view_state.get("current_range")
+        t_arr, sig = self.state.get("sound_object").time_slice(t1, t2)
+        sig -= np.mean(sig, axis=0)
+
+        if lowres_timeout:
+            for ch in channels:
                 # Scale down the resolution of the spectrogram computed
                 sr_scale = 1
                 fs_scale = 1
@@ -506,36 +589,95 @@ class AudioView(widgets.QWidget):
                     ),
                     min_freq=read_default.MIN_FREQ,
                     max_freq=read_default.MAX_FREQ,
+                    cmplx=False,
                 )
                 spec = np.repeat(spec, sr_scale, axis=1)
                 spec = np.repeat(spec, fs_scale, axis=0)
 
-                self._lowres_timer.start(lowres_timeout)
-                self.events.setBusy.emit(True)
-            else:
-                t_spec, f_spec, spec, _ = spectrogram(
-                    sig[:, ch],
-                    self.state.get("sound_object").sampling_rate,
-                    spec_sample_rate=read_default.SPEC_SAMPLE_RATE,
-                    freq_spacing=read_default.SPEC_FREQ_SPACING,
-                    min_freq=read_default.MIN_FREQ,
-                    max_freq=read_default.MAX_FREQ,
+                # i think these are probably incorrect
+                # should get the real way to get these from soundsig.
+                t_spec = np.linspace(
+                    t1,
+                    t2,
+                    spec.shape[1]
                 )
-                self.events.setBusy.emit(False)
+                f_spec = np.linspace(
+                    read_default.MIN_FREQ,
+                    read_default.MAX_FREQ,
+                    spec.shape[0]
+                )
 
-            spec_results[ch] = (t_spec, f_spec, spec)
+                self._lowres_timer.start(lowres_timeout)
+                spec_results[ch] = (t_spec, f_spec, spec)
+            self.on_spectrogram_completed(lores=True, spec_results=spec_results)
+        else:
+            # Since the spectrogram computation is asynchronous, the user
+            # may have moved on to another view by the time the spectrogram
+            # comes back from its thread.
+            # So when it comes back (in on_spectrogram_completed()) we
+            # make sure that the job finished is the last one requested by
+            # checking if the _last_spec_key matches what we are waiting for.
+            # A better way to do this is if we had a way of stopping the
+            # spectrogram worker in its tracks when a new one is requested
+            # but I don't know how to do that.
+            self._last_spec_key = uuid.uuid4().hex
+            self.worker = SpectrogramWorker(
+                self._last_spec_key,
+                channels,
+                sig,
+                self.state.get("sound_object").sampling_rate,
+                spec_sample_rate=read_default.SPEC_SAMPLE_RATE,
+                freq_spacing=read_default.SPEC_FREQ_SPACING,
+                min_freq=read_default.MIN_FREQ,
+                max_freq=read_default.MAX_FREQ,
+                cmplx=False
+            )
+            self.worker.finished.connect(partial(
+                self.on_spectrogram_completed,
+                False,
+            ))
+            self._reset_thread()
+            self.worker.moveToThread(self.thread)
+            self.thread.started.connect(self.worker.compute)
+            self.thread.start()
+
+    def on_spectrogram_completed(self, lores=False, key=None, spec_results=None):
+        """Draws the given spectrogram data for all sources
+        """
+        if not lores and key != self._last_spec_key:
+            return
 
         for source_view in self.source_view_registry:
-            source_view.draw_spectrogram(*spec_results[source_view.source["channel"]])
+            if source_view.source["hidden"] == True:
+                continue
+            # compute the value to normalize amp env to across channels
+            if self.view_state.has("show_ampenv") and lores == False:
+                max_values = []
+                for k, v in spec_results.items():
+                    max_values.append(np.max(np.sum(v[2], axis=0)))
+                source_view.draw_spectrogram(
+                    *spec_results[source_view.source["channel"]],
+                    show_ampenv=True,
+                    ampenv_norm=np.max(max_values) * 1.1
+                )
+            else:
+                source_view.draw_spectrogram(
+                    *spec_results[source_view.source["channel"]],
+                    show_ampenv=False,
+                )
             source_view._clear_drag_lines()
             source_view._update_highlighted_range()
+            source_view._draw_intervals()
             source_view._clear_vertical_lines()
             source_view._draw_xaxis()
 
-class SourceView(widgets.QWidget):
-    """Visualize the current interval for a given source (aka 1 unique vocalizer)
 
-    Draws the spectrogram for the given interval
+class SourceView(widgets.QWidget):
+    """Visualize audio for a given source (aka 1 unique vocalizer)
+
+    Draws the spectrogram for the given interval and handles
+    selection functions, keyboard shortcuts, and user functions pertaining
+    to selection of audio sections and labeling vocal intervals.
     """
     def __init__(self, source_idx=None, parent=None, events=None):
         super().__init__(parent)
@@ -546,13 +688,16 @@ class SourceView(widgets.QWidget):
 
         self.source_idx = source_idx
         self.source = self.state.get("sources")[self.source_idx]
+        self._drawn_intervals = []
 
         self.init_ui()
 
         self.events.rangeSelected.connect(self.on_range_selected)
         self.events.rangeHighlighted.connect(self.on_range_highlighted)
+        self.events.triggerShortcut.connect(self.on_shortcut)
 
-        # self.events.rangeChanged.connect(self.on_range_changed)
+        self._highlight_rect = None
+        self._drawn_intervals = []
 
     def init_ui(self):
         self.drag_curves = {}
@@ -565,17 +710,20 @@ class SourceView(widgets.QWidget):
 
         self.spectrogram_plot.selected_range_line_start = pg.InfiniteLine()
         self.spectrogram_plot.selected_range_line_stop = pg.InfiniteLine()
+        self.spectrogram_plot.spec_range_line_start = pg.InfiniteLine(angle=0)
+        self.spectrogram_plot.spec_range_line_stop = pg.InfiniteLine(angle=0)
+
         self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_start)
         self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_stop)
-
-        self.spectrogram_plot.highlighted_range_line_start = pg.InfiniteLine(pen=pg.mkPen("g", width=1))
-        self.spectrogram_plot.highlighted_range_line_stop = pg.InfiniteLine(pen=pg.mkPen("g", width=1))
-        self.spectrogram_plot.addItem(self.spectrogram_plot.highlighted_range_line_start)
-        self.spectrogram_plot.addItem(self.spectrogram_plot.highlighted_range_line_stop)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.spec_range_line_start)
+        self.spectrogram_plot.addItem(self.spectrogram_plot.spec_range_line_stop)
 
         self.spectrogram_plot.hideAxis("left")
         self.spectrogram_plot.hideButtons()  # Gets rid of "A" autorange button
         self._set_spectrogram_plot_limits()
+
+        self.ampenv_plot = pg.PlotCurveItem([], pen=pg.mkPen("g", width=1.2))
+        self.spectrogram_viewbox.addItem(self.ampenv_plot)
 
         layout = widgets.QVBoxLayout()
         layout.addWidget(self.spectrogram_plot)
@@ -585,9 +733,12 @@ class SourceView(widgets.QWidget):
         self.spectrogram_viewbox.dragInProgress.connect(self.on_drag_in_progress)
         self.spectrogram_viewbox.clicked.connect(self.on_click)
         self.spectrogram_viewbox.zoomEvent.connect(self.on_zoom)
-        # self.spectrogram_viewbox.menuSelection.connect(self.on_menu_selection)
 
     def _set_spectrogram_plot_limits(self):
+        """
+        TODO: there are a lot of axes conversions (spectrogram units, amp
+        env units, and plot units)
+        """
         ymax = int(
             (read_default.MAX_FREQ - read_default.MIN_FREQ) /
             read_default.SPEC_FREQ_SPACING
@@ -601,7 +752,7 @@ class SourceView(widgets.QWidget):
         )
 
     def _nice_tick_spacing(self, win_size):
-        """Compute a nice tick spacing for the given window size
+        """Compute a nice tick spacing for the given window size for x-axis
         """
         if win_size < 60:
             first_guess = win_size / 10
@@ -626,53 +777,19 @@ class SourceView(widgets.QWidget):
 
         ax_spec.setTicks([ticks])
 
-    def draw_spectrogram(self, t_spec, f_spec, spec):
-        # Do the db conversion
-        logspec = 20 * np.log10(np.abs(spec))
-        max_b = logspec.max()
-        min_b = logspec.max() - 40
-        logspec[logspec < min_b] = min_b
-        self.image.setImage(logspec.T)
-
-    def _get_drag_mode(self, click_location):
-        """Use the click location to determine how the dragging will affect
-        the selected range
-
-        "move": moves the entire range
-        "left": moves only the left boundary
-        "right": moves only the right boundary
-        "new": creates a new range
-        """
-        if not self.view_state.has("selected_range"):
-            return "new", None
-
-        elif self.view_state.has("selected_range"):
-            current_range = self.view_state.get("selected_range")
-            base_t = self.view_state.get("current_range")[0]
-            start_t, end_t = current_range
-            spec_sample_rate = read_default.SPEC_SAMPLE_RATE
-            start_idx = int(round((start_t - base_t) * spec_sample_rate))
-            end_idx = int(round((end_t - base_t) * spec_sample_rate))
-            buffer = (end_idx - start_idx) / 10
-
-            if start_idx + buffer <= click_location.x() <= end_idx - buffer:
-                ## This would normally be "move", (start_idx, end_idx) but I
-                ## don't wnat to enable click and drag of intervals
-                return "new", None
-            elif np.abs(start_idx - click_location.x()) < buffer:
-                return "left", start_idx
-            elif np.abs(end_idx - click_location.x()) < buffer:
-                return "right", end_idx
-            else:
-                return "new", None
-
     def _clear_drag_lines(self):
+        if self.view_state.has("selected_threshold_line"):
+            self.view_state.clear("selected_threshold_line")
+        if self.view_state.has("selected_spec_range"):
+            self.view_state.clear("selected_spec_range")
         if len(self.drag_curves):
             self.spectrogram_plot.removeItem(self.drag_curves[self.spectrogram_plot])
 
     def _clear_vertical_lines(self):
         self.spectrogram_plot.selected_range_line_start.setVisible(False)
         self.spectrogram_plot.selected_range_line_stop.setVisible(False)
+        self.spectrogram_plot.spec_range_line_start.setVisible(False)
+        self.spectrogram_plot.spec_range_line_stop.setVisible(False)
 
     def _draw_drag_curves(self, plot, start, end):
         pen = pg.mkPen((59, 124, 32, 255))
@@ -684,10 +801,62 @@ class SourceView(widgets.QWidget):
         plot.addItem(curve)
         return curve
 
+    def draw_spectrogram(self, t_spec, f_spec, spec,
+            show_ampenv=False, ampenv_norm=None):
+        """Set the spectrogram image data
+
+        Computes spectrogram in dB. Uses spectrogram to compute
+        an amp env if amp env visualization is requested.
+        """
+        # Do the db conversion
+        logspec = 20 * np.log10(np.abs(spec))
+        max_b = logspec.max()
+        min_b = logspec.max() - 40
+        logspec[logspec < min_b] = min_b
+        self.image.setImage(logspec.T)
+
+        self._current_spectrogram_yscale = read_default.SPEC_FREQ_SPACING
+        # instead of computing a separate ampenv, just use the spectrogram power
+        if show_ampenv:
+            ampenv = np.sum(spec, axis=0)
+            self.draw_ampenv(t_spec, ampenv, norm=ampenv_norm)
+        else:
+            self.ampenv_plot.setData([])
+
+    def draw_ampenv(self, t_ampenv, ampenv, norm=None):
+        viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
+        ((_, _), (_, ymax)) = viewbox.viewRange()
+
+        # normalize to ymax value
+        ampenv = ymax * ampenv / (norm or np.max(ampenv))
+        self._current_ampenv_yscale = (norm or np.max(ampenv)) / ymax
+        self.ampenv_plot.setData(ampenv)
+
+    def on_shortcut(self, shortcut):
+        if not self.view_state.has("source_focus"):
+            return
+
+        if self.view_state.get("source_focus") != self.source_idx:
+            return
+
+        if shortcut == "W":
+            self.on_find_in_selection(0)
+        elif shortcut == "Shift+W":
+            self.on_find_in_selection(0, mode="max_zscore")
+        elif shortcut == "X":
+            self.on_delete_selection()
+        elif shortcut == "Q":
+            pass
+        elif shortcut == "Z":
+            pass
+
     def on_zoom(self, direction, pos):
         """Pass the zoom signal up to the AudioView
 
         Trieds to keep the cursor position fixed.
+
+        direction: +1, -1 direction of zoom
+        pos: (t, _) of mouse cursor during zoom.
         """
         t_start, t_stop = self.view_state.get("current_range")
         t_cursor = t_start + pos[0] * (t_stop - t_start)
@@ -698,67 +867,90 @@ class SourceView(widgets.QWidget):
             self.events.zoomEvent[int, float].emit(-1, t_cursor)
 
     def on_drag_in_progress(self, start, end):
-        drag_mode, extra = self._get_drag_mode(start)
+        """Draws vertical lines deliminting the edges of the drag
 
+        If in spectrogram only mode, also draws horizontal lines
+        If in amp env mode, draws the threshold line
+        """
         dx = end.x() - start.x()
         self._clear_drag_lines()
-        if drag_mode == "move":
-            start_idx, end_idx = extra
-            self.spectrogram_plot.selected_range_line_start.setValue(start_idx + dx)
-            self.spectrogram_plot.selected_range_line_stop.setValue(end_idx + dx)
-        elif drag_mode == "left":
-            start_idx = extra
-            self.spectrogram_plot.selected_range_line_start.setValue(start_idx + dx)
-        elif drag_mode == "right":
-            end_idx = extra
-            self.spectrogram_plot.selected_range_line_stop.setValue(end_idx + dx)
-        elif drag_mode == "new":
+
+        self.spectrogram_plot.selected_range_line_start.setValue(start.x())
+        self.spectrogram_plot.selected_range_line_stop.setValue(end.x())
+        self.spectrogram_plot.selected_range_line_start.setVisible(True)
+        self.spectrogram_plot.selected_range_line_stop.setVisible(True)
+
+        if not self.view_state.has("show_ampenv"):
+            self.spectrogram_plot.spec_range_line_start.setValue(start.y())
+            self.spectrogram_plot.spec_range_line_stop.setValue(end.y())
+            self.spectrogram_plot.spec_range_line_start.setVisible(True)
+            self.spectrogram_plot.spec_range_line_stop.setVisible(True)
+
+        else:
             curve_1 = self._draw_drag_curves(self.spectrogram_plot, start, end)
             self.drag_curves = {
                 self.spectrogram_plot: curve_1,
             }
 
     def on_drag_complete(self, start, end):
-        dx = 0
+        """Manage the end of a drag event
 
-        drag_mode, extra = self._get_drag_mode(start)
+        A drag event can come in multiple flavors. The main ones are
 
+        (1) Dragging to denote a time range
+        (2) Dragging to draw a threshold line
+        (3) Dragging to box a range of frequencies in time
+
+        All three care about the time of the drag start and drag stop. (2) and (3)
+        care about the y values in the amp env and spectrogram scales respectively.
+
+        (2) Cares about the ampenv values at drag start and stop to threshold
+            sections of the ampenv above that line
+        (3) Cares about frequency values (of spectrogram space) of drag start
+            and drag stop (so that detection can be done after bandpassing
+            in that range, )
+        """
         spec_sample_rate = read_default.SPEC_SAMPLE_RATE
-        if drag_mode == "new":
-            start_dt = start.x() / spec_sample_rate
-            end_dt = end.x() / spec_sample_rate
-            base_t = self.view_state.get("current_range")[0]
-            start_t = base_t + start_dt
-            end_t = base_t + end_dt
-        else:
-            start_t, end_t = self.view_state.get("selected_range")
-            base_t = self.view_state.get("current_range")[0]
-            dx = end.x() - start.x()
-            if drag_mode == "left":
-                start_idx = extra
-                start_dt = (start_idx + dx) / spec_sample_rate
-                new_start_t = base_t + start_dt
-                start_t, end_t = min(new_start_t, end_t), max(new_start_t, end_t)
-            elif drag_mode == "right":
-                end_idx = extra
-                end_dt = (end_idx + dx) / spec_sample_rate
-                new_end_t = base_t + end_dt
-                start_t, end_t = min(start_t, new_end_t), max(start_t, new_end_t)
-            elif drag_mode == "move":
-                start_idx, end_idx = extra
-                start_dt = (start_idx + dx) / spec_sample_rate
-                end_dt = (end_idx + dx) / spec_sample_rate
-                start_t = base_t + start_dt
-                end_t = base_t + end_dt
+
+        start_dt = start.x() / spec_sample_rate
+        end_dt = end.x() / spec_sample_rate
+        base_t = self.view_state.get("current_range")[0]
+        start_t = base_t + start_dt
+        end_t = base_t + end_dt
+
+        if self.view_state.has("show_ampenv") and self._current_ampenv_yscale:
+            self.view_state.set(
+                "selected_threshold_line",
+                (
+                    start.y() * self._current_ampenv_yscale,
+                    end.y() * self._current_ampenv_yscale
+                )
+            )
+        self.view_state.set(
+            "selected_spec_range",
+            (
+                start.y() * self._current_spectrogram_yscale,
+                end.y() * self._current_spectrogram_yscale
+            )
+        )
+        self.view_state.set(
+            "source_focus",
+            self.source_idx
+        )
 
         self.events.rangeSelected.emit(start_t, end_t)
 
+        if self.state.has("autosearch"):
+            self.on_find_in_selection()
+
     def on_click(self, loc):
-        """Process a click event
+        """Clear the selection when a point is clicked (and not dragged)
         """
         self.events.rangeSelected.emit(None, None)
 
     def on_range_selected(self, start_t, end_t):
+        """Handle when a range is selected or deselected
+        """
         spec_sample_rate = read_default.SPEC_SAMPLE_RATE
 
         if start_t is None or end_t is None:
@@ -767,16 +959,11 @@ class SourceView(widgets.QWidget):
                 self.view_state.clear("selected_range")
             self.spectrogram_plot.selected_range_line_start.setVisible(False)
             self.spectrogram_plot.selected_range_line_stop.setVisible(False)
+            self.spectrogram_plot.spec_range_line_start.setVisible(False)
+            self.spectrogram_plot.spec_range_line_stop.setVisible(False)
         else:
-            base_t = self.view_state.get("current_range")[0]
             start_t, end_t = min(start_t, end_t), max(start_t, end_t)
             self.view_state.set("selected_range", (start_t, end_t))
-            start_idx = int(round((start_t - base_t) * spec_sample_rate))
-            end_idx = int(round((end_t - base_t) * spec_sample_rate))
-            self.spectrogram_plot.selected_range_line_start.setVisible(True)
-            self.spectrogram_plot.selected_range_line_stop.setVisible(True)
-            self.spectrogram_plot.selected_range_line_start.setValue(start_idx)
-            self.spectrogram_plot.selected_range_line_stop.setValue(end_idx)
 
     def on_range_highlighted(self, start_t, end_t):
         spec_sample_rate = read_default.SPEC_SAMPLE_RATE
@@ -791,25 +978,191 @@ class SourceView(widgets.QWidget):
             self.view_state.set("highlighted_range", (start_t, end_t))
             self._update_highlighted_range()
 
+    def on_find_in_selection(self, modify=0, mode="broadband"):
+        """Searches for calls in selected window
+
+        modify:
+            +1: increase the number of calls detected in the window
+            by decreasing the threshold, ignore width, and fuse duration
+            -1: decrease "
+            0: just do a default search
+
+        (1) Use the ampenv threshold line first. if that doesn't make sense
+        (2) use the spectrogram range function. then fall back.
+        """
+        if not self.view_state.has("selected_range"):
+            return
+
+        t0, t1 = self.view_state.get("selected_range")
+
+        if isinstance(self.source.get("intervals"), pd.DataFrame):
+            df = self.source.get("intervals")
+            selector = (
+                (df["t_start"] >= t0) & (df["t_stop"] <= t1) |
+                (df["t_start"] < t0) & (df["t_stop"] > t0) |
+                (df["t_start"] < t1) & (df["t_stop"] > t1)
+            )
+            old_count = len(df[selector])
+        else:
+            old_count = 0
+
+        # (1) Search by amplitude threshold
+        if self.view_state.has("selected_threshold_line"):
+            y0, y1 = self.view_state.get("selected_threshold_line")
+            # Map the xdata onto times
+            m = (y1 - y0) / (t1 - t0)
+            b = y0 - t0 * m
+            def _thresh(t):
+                return m * t + b
+            xdata, ydata = self.ampenv_plot.getData()
+            tdata = self.view_state.get("current_range")[0] + xdata / read_default.SPEC_SAMPLE_RATE
+            range_selector = (tdata >= t0) & (tdata < t1)
+            ythresh = _thresh(tdata[range_selector])
+            yvalues = self._current_ampenv_yscale * ydata[range_selector]
+
+            events = threshold_events(
+                yvalues,
+                ythresh,
+                polarity=1,
+                sampling_rate=1,
+                ignore_width=2,
+                min_size=2,
+                fuse_duration=2
+            )
+            events = [
+                [tdata[range_selector][e[0]], tdata[range_selector][e[1]]]
+                for e in events
+            ]
+        # (2) Search by frequency band selected
+        else:
+            y0, y1 = self.view_state.get("selected_spec_range")
+            print(y0, y1)
+            events = threshold_all_events(
+                self.state.get("sound_object"),
+                window_size=None,
+                channel=self.source["channel"],
+                t_start=t0,
+                t_stop=t1,
+                ignore_width=0.005,
+                min_size=0.005,
+                fuse_duration=0.01,
+                threshold_z=2.0,
+                highpass=y0,
+                lowpass=y1,
+                amp_env_mode=mode
+            )
+
+        # Replaces the relevant rows in the dataframe
+        new_rows = [{
+            "t_start": event[0],
+            "t_stop": event[1],
+        } for event in events]
+
+        if not len(new_rows):
+            self._draw_intervals()
+            return
+
+        if isinstance(self.source.get("intervals"), pd.DataFrame):
+            new_df = df[~selector].copy()
+            new_df = new_df.append(new_rows, ignore_index=False, sort=True)
+        else:
+            new_df = pd.DataFrame(new_rows)
+
+        new_df = new_df.sort_values(by="t_start")
+
+        self.source["intervals"] = new_df
+        self._draw_intervals()
+
+    def on_delete_selection(self):
+        """Delete from [intervals] any intervals that are partial contained within
+        the currently selected range.
+        """
+        if not self.view_state.has("selected_range"):
+            return
+        if "intervals" not in self.source:
+            return
+
+        selection_start, selection_stop = self.view_state.get("selected_range")
+        df = self.source["intervals"]
+        selector = (
+            ((df["t_start"] >= selection_start) & (df["t_stop"] <= selection_stop)) |
+            ((df["t_start"] < selection_stop) & (df["t_stop"] > selection_stop)) |
+            ((df["t_start"] < selection_start) & (df["t_stop"] > selection_start))
+
+        )
+        self.source["intervals"] = df[~selector].copy()
+        self._draw_intervals()
+
     def _update_highlighted_range(self):
-        base_t = self.view_state.get("current_range")[0]
+        base_t, base_end_t = self.view_state.get("current_range")
+        win_size = read_default.WINDOW_SIZE
+
         spec_sample_rate = read_default.SPEC_SAMPLE_RATE
+
+        if self._highlight_rect is not None:
+            self.spectrogram_plot.removeItem(self._highlight_rect)
+            self._highlight_rect = None
 
         if self.view_state.has("highlighted_range"):
             start_t, end_t = self.view_state.get("highlighted_range")
-            start_idx = int(round((start_t - base_t) * spec_sample_rate))
-            end_idx = int(round((end_t - base_t) * spec_sample_rate))
 
-            self.spectrogram_plot.highlighted_range_line_start.setVisible(True)
-            self.spectrogram_plot.highlighted_range_line_stop.setVisible(True)
-            self.spectrogram_plot.highlighted_range_line_start.setValue(start_idx)
-            self.spectrogram_plot.highlighted_range_line_stop.setValue(end_idx)
-        else:
-            self.spectrogram_plot.highlighted_range_line_start.setVisible(False)
-            self.spectrogram_plot.highlighted_range_line_stop.setVisible(False)
+            start_frac = (start_t - base_t) / win_size
+            duration_frac = (end_t - start_t) / win_size
+
+            viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
+            ((xmin, xmax), (ymin, ymax)) = viewbox.viewRange()
+            self._highlight_rect = gui.QGraphicsRectItem(
+                xmin + (start_frac * (xmax - xmin)),
+                ymax - (ymax / 80),
+                duration_frac * (xmax - xmin),
+                ymax / 40
+            )
+            self._highlight_rect.setPen(pg.mkPen(None))
+            self._highlight_rect.setBrush(pg.mkBrush("g"))
+            self.spectrogram_plot.addItem(self._highlight_rect)
+
+    def _draw_intervals(self):
+        """Draw rectangles labeling events for the chosen source"""
+        for rect in self._drawn_intervals:
+            self.spectrogram_plot.removeItem(rect)
+        self._drawn_intervals = []
+
+        intervals = self.source.get("intervals", [])
+        if not len(intervals):
+            return
+
+        t1, t2 = self.view_state.get("current_range")
+        start_index = np.searchsorted(intervals["t_start"], t1)
+        if start_index > 0:
+            start_index -= 1
+
+        win_size = read_default.WINDOW_SIZE
+        for idx in range(start_index, len(intervals)):
+            start_t, end_t = intervals.iloc[idx][["t_start", "t_stop"]]
+            if start_t > t2:
+                break
+
+            if (t1 <= start_t <= t2) or (t1 <= end_t <= t2):
+                start_frac = (start_t - t1) / win_size
+                duration_frac = (end_t - start_t) / win_size
+
+                viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
+                ((xmin, xmax), (_, ymax)) = viewbox.viewRange()
+
+                rect = gui.QGraphicsRectItem(
+                    xmin + (start_frac * (xmax - xmin)),
+                    ymax - (3 * ymax / 80),
+                    duration_frac * (xmax - xmin),
+                    ymax / 40
+                )
+                rect.setPen(pg.mkPen(None))
+                rect.setBrush(pg.mkBrush("r"))
+                self.spectrogram_plot.addItem(rect)
+                self._drawn_intervals.append(rect)
 
 
 class VocalPeriodsView(widgets.QScrollArea):
+    """Show and jump to windows to highlight them"""
 
     def __init__(self, parent=None, events=None):
         super().__init__(parent)
@@ -824,7 +1177,10 @@ class VocalPeriodsView(widgets.QScrollArea):
 
         self.vocalPeriodsLayout = widgets.QHBoxLayout()
 
-        self.detectButton = widgets.QPushButton("Detect Potential Vocal Periods")
+        self.detectButton = widgets.QPushButton("Detect Potential\nVocal Periods", self)
+        self.detectButton.setGeometry(200, 150, 100, 100)
+        self.detectButton.setStyleSheet("width: 150px; height: 150px;")
+
         self.mainLayout.addWidget(self.detectButton)
         self.mainLayout.addLayout(self.vocalPeriodsLayout)
         self.mainLayout.addStretch()
@@ -833,57 +1189,49 @@ class VocalPeriodsView(widgets.QScrollArea):
 
         self.detectButton.clicked.connect(self.on_detect)
 
-    def on_detect(self):
-        # Detect on all channels with sources - merge them, then present them as options
-
-        audio_signal = self.state.get("sound_object")
-        first_source = self.state.get("sources")[0]
-        events = threshold_all_events(
-                audio_signal,
-                window_size=10.0,
-                channel=first_source["channel"],
-                t_start=None,
-                t_stop=None,
-                ignore_width=0.01,
-                min_size=0.01,
-                fuse_duration=2.0,
-                threshold_z=2.0,
-                amp_env_mode="broadband"
-        )
-
-        first_source["vocal_periods"] = events
-
+    def clear_vocal_periods(self):
         for i in reversed(range(self.vocalPeriodsLayout.count())):
             item = self.vocalPeriodsLayout.itemAt(i)
             if item.widget():
                 item.widget().deleteLater()
 
+    def on_detect(self):
+        """
+        Any custom detection hooks would go here
+        """
+        self.clear_vocal_periods()
+
+        # Detect on all channels with sources - merge them, then present them as options
+        audio_signal = self.state.get("sound_object")
+        channels = np.unique([source["channel"] for source in self.state.get("sources")])
+        all_events = []
+        for channel in channels:
+            events = threshold_all_events(
+                    audio_signal,
+                    window_size=20.0,
+                    channel=channel,
+                    t_start=None,
+                    t_stop=None,
+                    ignore_width=0.01,
+                    min_size=0.1,
+                    fuse_duration=2.0,
+                    threshold_z=2.0,
+                    amp_env_mode="broadband"
+            )
+            all_events += events
+
+        events = fuse_events(all_events)
+
+        # first_source["vocal_periods"] = events
         for event in events:
             button = widgets.QPushButton("{:.2f}\nto\n{:.2f}".format(event[0], event[1]))
             self.vocalPeriodsLayout.addWidget(button)
+            button.setStyleSheet("width:100px; height: 100px;")
             button.clicked.connect(partial(self.on_event_clicked, event))
 
     def on_event_clicked(self, event):
         t1, t2 = event
         t_center = np.mean([t1, t2])
-        self.events.setPosition[object, object].emit(t_center, TimeScrollManager.ALIGN_CENTER)
+        self.events.setPosition[object, object].emit(t1, TimeScrollManager.ALIGN_LEFT)
         self.view_state.set("highlighted_range", (t1, t2))
         self.events.rangeHighlighted.emit(t1, t2)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-pass

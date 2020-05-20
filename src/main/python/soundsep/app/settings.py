@@ -9,14 +9,18 @@ class _defaults:
     MIN_FREQ = 250
     MAX_FREQ = 8000
 
-    LORES_SCALES = [2.0, 4.0, 8.0, 12.0, 16.0]
-    LORES_SAMPLE_RATE_FACTOR = [4, 12, 18, 22, 25]
-    LORES_FREQ_SPACING_FACTOR = [2, 2, 2, 2, 2]
+    LORES_SCALES = [1.0, 2.0, 4.0, 8.0, 12.0, 16.0]
+    LORES_SAMPLE_RATE_FACTOR = [4, 8, 12, 18, 22, 25]
+    LORES_FREQ_SPACING_FACTOR = [2, 4, 4, 4, 4, 4]
+    HIRES_SAMPLE_RATE_FACTOR = [1, 1, 2, 2, 4, 4]
+    HIRES_FREQ_SPACING_FACTOR = [1, 1, 1, 1, 1, 1]
 
     MAX_WINDOW_SIZE = 20.0
     MIN_WINDOW_SIZE = 1.0
     WINDOW_SIZE = 6.0
     PAGE_STEP = 40  # number of pages per window
+
+    KEYBOARD_TIME_STEP_FRACTION = 4
 
 
 class _SettingsReader:

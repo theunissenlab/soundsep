@@ -189,7 +189,10 @@ def threshold_events(
     if polarity not in (-1, 1):
         raise ValueError("Polarity must equal +/- 1")
 
-    starts_on = (polarity * signal[0] >= polarity * threshold)
+    if isinstance(threshold, np.ndarray):
+        starts_on = (polarity * signal[0] >= polarity * threshold)[0]
+    else:
+        starts_on = (polarity * signal[0] >= polarity * threshold)
 
     crossings = np.diff((polarity * signal >= polarity * threshold).astype(np.int))
     interval_starts = np.where(crossings > 0)[0] + 1
@@ -298,6 +301,8 @@ def threshold_all_events(
         min_size=0.05,
         fuse_duration=0.5,
         threshold_z=3.0,
+        highpass=1000,
+        lowpass=8000,
         amp_env_mode="broadband"
     ):
     """Find intervals of potential vocalizations periods (in seconds)
@@ -338,8 +343,8 @@ def threshold_all_events(
         amp_env = get_amplitude_envelope(
             window_signal[:, channel],
             sampling_rate,
-            highpass=1000,
-            lowpass=8000,
+            highpass=highpass,
+            lowpass=lowpass,
             mode=amp_env_mode
         )
 
@@ -393,3 +398,33 @@ def threshold_all_events(
         all_intervals.append(last_interval_to_check)
 
     return all_intervals
+
+
+def fuse_events(events, fuse_duration=0.5, target_duration=5.0):
+    """From list of (start, stop) times, create list with them merged
+    """
+    sorted_events = sorted(events)
+
+    result = []
+    for event in sorted_events:
+        if len(result) == 0:
+            result.append(list(event))
+        elif result[-1][1] - result[-1][0] > target_duration:
+            if event[0] >= result[-1][1] + fuse_duration:
+                result.append(list(event))
+            if event[0] < result[-1][1] + fuse_duration:
+                result[-1][1] = max(event[1], result[-1][1])
+            elif event[0] < result[-1][1] and event[1] < result[-1][1]:
+                pass
+            elif event[0] < result[-1][1] and event[1] - result[-1][1] < fuse_duration:
+                result[-1][1] = event[1]
+            elif event[0] < result[-1][1] and event[1] - result[-1][1] >= fuse_duration:
+                result.append([result[-1][1], event[1]])
+        elif event[1] < result[-1][1]:
+            pass
+        elif event[0] > result[-1][1] + fuse_duration:
+            result.append(list(event))
+        elif event[1] > result[-1][1]:
+            result[-1][1] = event[1]
+
+    return result

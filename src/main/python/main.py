@@ -32,12 +32,27 @@ class Events(widgets.QWidget):
     rangeHighlighted = pyqtSignal(object, object)
     setPosition = pyqtSignal([object], [object, object])
     zoomEvent = pyqtSignal([int], [int, float])
-    setBusy = pyqtSignal(bool)
+    triggerShortcut = pyqtSignal(str)
 
 
 class App(widgets.QMainWindow):
     """Main App instance with logic for file read/write
     """
+
+    shortcut_codes = [
+        "A",
+        "Shift+A",
+        "D",
+        "Shift+D",
+        "E"
+        "M",
+        "Q",
+        "W",
+        "Shift+W",
+        "X",
+        "Z",
+    ]
+
     def __init__(self):
         super().__init__()
         self.title = "SoundSep"
@@ -72,15 +87,26 @@ class App(widgets.QMainWindow):
         self.quit_action = widgets.QAction("Close", self)
         self.quit_action.triggered.connect(self.close)
 
-
         self.save_shortcut = widgets.QShortcut(gui.QKeySequence.Save, self)
         self.save_shortcut.activated.connect(self.save)
 
         self.close_shortcut = widgets.QShortcut(gui.QKeySequence.Close, self)
         self.close_shortcut.activated.connect(self.close)
 
+        for code in self.shortcut_codes:
+            shortcut = widgets.QShortcut(gui.QKeySequence(code), self)
+            shortcut.activated.connect(partial(self.pass_shortcut, code))
+
         # self.show_pref_action = widgets.QAction("Amplitude Envelope Parameters", self)
         # self.show_pref_action.triggered.connect(self.amp_env_pref_window.show)
+
+    def pass_shortcut(self, shortcut):
+        """
+        For some reason I can't get shortcuts defined in the child widgets
+        to work. So I have to define the shortcuts in this app and then pass
+        them through an event.
+        """
+        self.events.triggerShortcut.emit(shortcut)
 
     def init_ui(self):
         self.setWindowTitle(self.title)
