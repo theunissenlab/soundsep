@@ -33,22 +33,23 @@ class SpectrogramViewBox(pg.ViewBox):
     def getMenu(self):
         if self.menu is None:
             self.menu = gui.QMenu()
-            self.search_more = gui.QAction("Search More (W)", self.menu)
-            self.search_less = gui.QAction("Search Less (S)", self.menu)
+            self.search = gui.QAction("Search", self.menu)
             self.menu.addSeparator()
             self.delete = gui.QAction("Delete Selected Interval (Del)", self.menu)
             self.menu.addSeparator()
-            self.clear_all_on_channel = gui.QAction("Clear Entire Channel", self.menu)
+            self.merge = gui.QAction("Merge", self.menu)
+            self.menu.addSeparator()
+            self.desperate = gui.QAction("I'm desperate", self.menu)
 
-            self.search_more.triggered.connect(partial(self._emit_menu_selection, "search+"))
-            self.search_less.triggered.connect(partial(self._emit_menu_selection, "search-"))
+            self.search.triggered.connect(partial(self._emit_menu_selection, "search"))
             self.delete.triggered.connect(partial(self._emit_menu_selection, "delete"))
-            self.clear_all_on_channel.triggered.connect(partial(self._emit_menu_selection, "clear_all"))
+            self.merge.triggered.connect(partial(self._emit_menu_selection, "merge"))
+            self.desperate.triggered.connect(partial(self._emit_menu_selection, "desperate"))
 
-            self.menu.addAction(self.search_more)
-            self.menu.addAction(self.search_less)
+            self.menu.addAction(self.search)
+            self.menu.addAction(self.merge)
             self.menu.addAction(self.delete)
-            self.menu.addAction(self.clear_all_on_channel)
+            self.menu.addAction(self.desperate)
 
         return self.menu
 

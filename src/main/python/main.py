@@ -89,14 +89,19 @@ class App(widgets.QMainWindow):
         self.save_action.triggered.connect(self.save)
         self.quit_action = widgets.QAction("Close", self)
         self.quit_action.triggered.connect(self.close)
-        self.export_action = widgets.QAction("Export Intervals", self)
-        self.export_action.triggered.connect(self.export)
+        self.export_action = widgets.QAction("Export Pickle", self)
+        self.export_action.triggered.connect(partial(self.export, "pkl"))
+        self.export_csv_action = widgets.QAction("Export CSV", self)
+        self.export_csv_action.triggered.connect(partial(self.export, "csv"))
 
         self.save_shortcut = widgets.QShortcut(gui.QKeySequence.Save, self)
         self.save_shortcut.activated.connect(self.save)
 
         self.close_shortcut = widgets.QShortcut(gui.QKeySequence.Close, self)
         self.close_shortcut.activated.connect(self.close)
+
+        self.help_action = widgets.QAction("Help", self)
+        self.help_action.triggered.connect(self.help)
 
         for code in self.shortcut_codes:
             shortcut = widgets.QShortcut(gui.QKeySequence(code), self)
@@ -126,12 +131,20 @@ class App(widgets.QMainWindow):
             self.openRecentMenu.addAction(self.open_recent_actions[i])
         fileMenu.addSeparator()
         fileMenu.addAction(self.export_action)
+        fileMenu.addAction(self.export_csv_action)
         fileMenu.addAction(self.save_action)
         fileMenu.addSeparator()
         fileMenu.addAction(self.quit_action)
 
         settingsMenu = mainMenu.addMenu("&Settings")
+        helpMenu = mainMenu.addMenu("&Help")
+        helpMenu.addAction(self.help_action)
+
         # settingsMenu.addAction(self.show_pref_action)
+
+    def help(self):
+        url = QtCore.QUrl(read_default.GITHUB_LINK)
+        gui.QDesktopServices.openUrl(url)
 
     def display_main(self):
         self.main_view = MainView(self)
@@ -264,7 +277,7 @@ class App(widgets.QMainWindow):
             "Saved successfully.",
         )
 
-    def export(self):
+    def export(self, fmt="csv"):
         # Save the sources to a pandas dataframe
         if not self.state.has("sources"):
             widgets.QMessageBox.about(self, "!", "No sources to export")
@@ -283,13 +296,16 @@ class App(widgets.QMainWindow):
         file_name, _ = widgets.QFileDialog.getSaveFileName(
             self,
             "Export data",
-            os.path.join(self.state.get("sound_file"), "intervals.pkl"),
+            os.path.join(self.state.get("sound_file"), "intervals.{}".format(fmt)),
             "*",
             options=options)
         if not file_name:
             return
         else:
-            df.to_pickle(file_name)
+            if fmt == "pkl":
+                df.to_pickle(file_name)
+            elif fmt == "csv":
+                df.to_csv(file_name)
             widgets.QMessageBox.about(
                 self,
                 "Exported",

@@ -22,6 +22,8 @@ class _defaults:
 
     KEYBOARD_TIME_STEP_FRACTION = 4
 
+    GITHUB_LINK = "https://github.com/kevinyu/soundsep"
+
 
 class _SettingsReader:
     """Just a helper to make reading settings or default easier to write"""

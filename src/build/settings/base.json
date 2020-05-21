@@ -1,0 +1,14 @@
+{
+    "app_name": "Soundsep",
+    "author": "Kevin Yu",
+    "main_module": "src/main/python/main.py",
+    "version": "0.0.0",
+    "hidden_imports": [
+      "pyqtgraph",
+      "soundfile",
+      "soundsig.sound",
+      "soundsig.signal",
+      "sklearn.utils._cython_blas",
+      "sklearn.neighbors._typedefs"
+    ]
+}

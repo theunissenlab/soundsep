@@ -1,5 +1,9 @@
 # Documentation
 
+## Overall organization
+
+The main code for the gui is located in `src/main/python/soundsep/app` and the detection/threshold functions are found in `src/main/python/soundsep/detection`. `src/main/python/soundsep/interfaces` is where you would put functions that read audio files of different formats.
+
 ## Application State
 
 Application state is stored in global, singleton objects that can be
@@ -9,7 +13,7 @@ are `app.state.AppState` and `app.state.ViewState`.
 ### `app.state.AppState`
 Stores application state. Persists when the application is reloaded.
 
-#### API
+#### Methods
 
 `.reset()`: Reset all keys
 
@@ -34,7 +38,7 @@ Stores application state. Persists when the application is reloaded.
 ### `app.state.ViewState`
 Stores state of current audio view including visible time range information and highlighted data, etc.
 
-#### API
+#### Methods
 
 `.reset()`: Reset all keys
 
@@ -63,42 +67,11 @@ Stores state of current audio view including visible time range information and 
 * "highlighted_range": A single highlighted range for the user. Highlight is visually separate from labeled intervals.
 
 
-## Usage
-This GUI is designed to make it easy to segment vocalizations across multiple channels from multiple experimental sources.
+## API
 
-### Data selection
-An audio period can be selected by clicking and dragging on the spectrogram window. When Amp Env view is on, you drag a threshold line across the amplitude envelope shown. When Amp Env view is off, you select a region of time-frequency space. This region is used to detect individual vocal intervals. Clicking again (not dragging) on the spectrogram will clear the current selection.
-
-### Keyboard Shortcuts
-The keyboard shortcuts in this are designed to have your left hand on the keyboard:
-```
-Q W E
- A S D
-  Z X            M
-```
-and your right hand on the mouse.
-
-`A` and `D`: Move earlier and later in time
-
-`W` and `S`: Automatically segment into calls (both do the same)
-
-`Q`: Merge selected segments
-
-`E`: Toggle between amplitude envelope mode on/off
-
-`Z`: Automatically segment into calls (better in broadband noise)
-
-`X`: Delete calls in selected time range
-
-`Shift+W`, `SHIFT+S`: Increase and decrease (respectively) the amplitude envelope threshold value used in this section
-
-`M`: Toggle between automatic dragging mode (click and drag selection automatically triggers call segmentation when released)
-
-### Vocalization detection
 TBD
 
-### Data export
-Data is exported into a pandas DataFrame saved in a pickle file. The data has columns "source_name", "source_channel", "t_start", and "t_stop" for all labeled intervals.
 
-## API / Extensions
-TBD
+## Building the Installer
+
+To build the installer on ubuntu install ruby and fpm (see instructions: https://fpm.readthedocs.io/en/latest/installing.html). Then the command `fbs installer` should create the installer file `targets/SoundSep.deb` (on ubuntu).

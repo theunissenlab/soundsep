@@ -38,12 +38,12 @@ This creates a directory in the same folder as the wav file called "output" wher
 
 ## Other setup options
 
-Installation of QT Creator (only required for designing GUI with a GUI)
+Installation of QT Creator (only for GUI designer)
 ```
 sudo apt-get install qttools5-dev-tools
 ```
 
-Running the GUI (not made yet)
+Running the GUI
 ```
 fbs run
 ```

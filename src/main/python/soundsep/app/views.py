@@ -719,6 +719,8 @@ class SourceView(widgets.QWidget):
         self.spectrogram_plot.addItem(self.spectrogram_plot.spec_range_line_start)
         self.spectrogram_plot.addItem(self.spectrogram_plot.spec_range_line_stop)
 
+        self.spectrogram_viewbox.menuSelection.connect(self.on_menu_selection)
+
         self.spectrogram_plot.hideAxis("left")
         self.spectrogram_plot.hideButtons()  # Gets rid of "A" autorange button
         self._set_spectrogram_plot_limits()
@@ -854,6 +856,16 @@ class SourceView(widgets.QWidget):
             # merge
             self.on_merge_selection()
         elif shortcut == "Z":
+            self.on_find_in_selection(0, mode="max_zscore")
+
+    def on_menu_selection(self, item):
+        if item == "search":
+            self.on_find_in_selection(1)
+        elif item == "merge":
+            self.on_merge_selection()
+        elif item == "delete":
+            self.on_delete_selection()
+        elif item == "desperate":
             self.on_find_in_selection(0, mode="max_zscore")
 
     def on_zoom(self, direction, pos):
@@ -1012,7 +1024,7 @@ class SourceView(widgets.QWidget):
         else:
             old_count = 0
 
-        if self.view_state.has("selected_threshold_line") and old_count == 0:
+        if self.view_state.has("selected_threshold_line"):
             # (1) Search by amplitude threshold
             y0, y1 = self.view_state.get("selected_threshold_line")
             # Map the xdata onto time values
@@ -1080,7 +1092,7 @@ class SourceView(widgets.QWidget):
 
             threshold_adjuster = ThresholdAdjuster(t_arr, amp_env, df[selector])
             low, mid, high = threshold_adjuster.estimate()
-            threshold = low if modify == 1 else high
+            threshold = high if modify == 1 else low
 
             events = threshold_events(
                 amp_env,
