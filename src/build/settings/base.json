@@ -6,6 +6,7 @@
     "hidden_imports": [
       "pyqtgraph",
       "soundfile",
+      "sounddevice",
       "soundsig.sound",
       "soundsig.signal",
       "sklearn.utils._cython_blas",
