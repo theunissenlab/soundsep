@@ -71,6 +71,10 @@ and your right hand on the mouse.
 
 `M`: Toggle between automatic dragging mode (click and drag selection automatically triggers call segmentation when released)
 
+`Space`: Play currently selected audio
+
+`Esc`: Stop playing audio
+
 ### Vocalization detection
 
 (This functionality needs improvement still)
