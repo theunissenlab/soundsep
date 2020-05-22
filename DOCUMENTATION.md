@@ -75,4 +75,19 @@ TBD
 
 ## Building the Installer
 
-To build the installer on ubuntu install ruby and fpm (see instructions: https://fpm.readthedocs.io/en/latest/installing.html). Then the command `fbs installer` should create the installer file `targets/SoundSep.deb` (on ubuntu).
+To build the installer on ubuntu install ruby and fpm (see instructions: https://fpm.readthedocs.io/en/latest/installing.html). Then the command `fbs freeze` creates the frozen version of the app, and `fbs installer` should create the installer file `targets/SoundSep.deb` (on ubuntu).
+
+On Mac, there are some issues more issues that make things more complicated. This is due to (I think) a pyinstaller bug with Tk and for some reason the freeze command doesn't copy one portaudio library. This is the solution I found:
+
+```
+fbs freeze  # creates app at targets/Soundsep.app but won't run
+cd target/Soundsep.app/Contents/MacOS
+mkdir tcl tk
+cp -R /Library/Frameworks/Python.framework/Versions/3.7/lib/tcl* tcl/
+cp -R /Library/Frameworks/Python.framework/Versions/3.7/lib/tk* tk/
+cp -R /Library/Frameworks/Python.framework/Versions/3.7/lib/Tk* tk/
+cp env/lib/python3.7/site-packages/_sounddevice_data/portaudio-binaries/libportaudio.dylib  target/Soundsep.app/Contents/MacOS/_sounddevice_data/portaudio-binaries/
+fbs installer
+```
+
+The dmg will be created in `targets/SoundSep.dmg`
