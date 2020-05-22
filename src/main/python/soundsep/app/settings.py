@@ -20,7 +20,9 @@ class _defaults:
     WINDOW_SIZE = 6.0
     PAGE_STEP = 40  # number of pages per window
 
-    KEYBOARD_TIME_STEP_FRACTION = 4
+    KEYBOARD_TIME_STEP_FRACTION = 8
+
+    PLAYBACK_LINE_STEP = 20  # how far to step forward the playback line in samples
 
     GITHUB_LINK = "https://github.com/kevinyu/soundsep"
 

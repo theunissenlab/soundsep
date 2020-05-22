@@ -38,7 +38,7 @@ When a region is selected, you can right click for some basic options, or use th
 
 Note: If you are having a hard time getting intervals to be detected, try these:
 
-* selecting a narrower / wider frequency range in the normal view
+* selecting a narrower / wider frequency range or time range in the normal view
 
 * drawing threshold directly in the amp env view
 

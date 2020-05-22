@@ -4,6 +4,8 @@
 
 The main code for the gui is located in `src/main/python/soundsep/app` and the detection/threshold functions are found in `src/main/python/soundsep/detection`. `src/main/python/soundsep/interfaces` is where you would put functions that read audio files of different formats.
 
+Default values for settings and constant values for the gui are defined in `src/main/python/soundsep/app/settings.py`. User adjusted values can/will be set in a settings file accessible with `PyQt5.QtCore.QSettings("Theuniseen Lab", "Sound Separation")` (the location of the settings ini file in the filesystem varies by operating system).
+
 ## Application State
 
 Application state is stored in global, singleton objects that can be
@@ -65,7 +67,6 @@ Stores state of current audio view including visible time range information and 
 * "show_ampenv"
 
 * "highlighted_range": A single highlighted range for the user. Highlight is visually separate from labeled intervals.
-
 
 ## API
 

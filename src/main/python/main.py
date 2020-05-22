@@ -32,8 +32,9 @@ class Events(widgets.QWidget):
     rangeSelected = pyqtSignal(object, object)
     rangeHighlighted = pyqtSignal(object, object)
     setPosition = pyqtSignal([object], [object, object])
-    zoomEvent = pyqtSignal([int], [int, float])
+    zoomEvent = pyqtSignal([int], [int, float], [str])
     triggerShortcut = pyqtSignal(str)
+    playAudio = pyqtSignal(int)
 
 
 class App(widgets.QMainWindow):
@@ -54,6 +55,8 @@ class App(widgets.QMainWindow):
         "Shift+W",
         "X",
         "Z",
+        "Space",
+        "Escape"
     ]
 
     def __init__(self):

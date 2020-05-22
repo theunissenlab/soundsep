@@ -4,6 +4,7 @@ import uuid
 import pandas as pd
 import pyqtgraph as pg
 import numpy as np
+import sounddevice as sd
 from PyQt5.QtCore import (Qt, QObject, QProcess, QSettings, QThread, QTimer,
         pyqtSignal, pyqtSlot)
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
@@ -22,7 +23,7 @@ from app.state import AppState, ViewState
 from app.settings import fonts, read_default
 from app.style import qss
 from app.utils import TimeScrollManager, ThresholdAdjuster
-from app.workers import SpectrogramWorker
+from app.workers import SpectrogramWorker, VocalPeriodsWorker
 
 
 class MainView(widgets.QWidget):
@@ -345,7 +346,9 @@ class AudioView(widgets.QWidget):
         self.events.dataLoaded.connect(self.on_data_loaded)
         self.events.zoomEvent[int].connect(self.on_zoom)
         self.events.zoomEvent[int, float].connect(self.on_zoom)
+        self.events.zoomEvent[str].connect(self.on_zoom)
         self.events.triggerShortcut.connect(self.on_shortcut)
+        self.events.playAudio.connect(self.on_play_audio)
 
         # Timer for having a delay on computing the full spectrogram.
         # If the user is scrolling through time, don't want to compute
@@ -361,6 +364,7 @@ class AudioView(widgets.QWidget):
         self.showAmpenvToggle.setCheckable(True)
         self.autoSearchToggle = widgets.QPushButton("Auto Search on Drag")
         self.autoSearchToggle.setCheckable(True)
+
         if self.state.has("autosearch"):
             self.autoSearchToggle.toggle()
 
@@ -413,6 +417,11 @@ class AudioView(widgets.QWidget):
         self.thread = QThread(self)
         return self.thread
 
+    def stop_audio_playback(self):
+        sd.stop()
+        for source_view in self.source_view_registry:
+            source_view.reset_playback_line()
+
     def closeEvent(self):
         if self.thread is not None:
             self.thread.stop()
@@ -442,6 +451,21 @@ class AudioView(widgets.QWidget):
             # Shortcut for toggling autosearch mode
             self.autoSearchToggle.toggle()
             self.on_auto_search()
+        elif shortcut == "Space":
+            if not self.view_state.has("source_focus"):
+                # This is the default behavior if one of the sources isn't selected
+                # If it is selected, then the playback function is delegated
+                # to the SourceView object in focus
+                for source_idx, source_view in enumerate(self.source_view_registry):
+                    if not source_view.source["hidden"]:
+                        self.events.playAudio.emit(source_idx)
+                        break
+        elif shortcut == "Escape":
+            self.stop_audio_playback()
+
+    def on_play_audio(self, source_idx):
+        self.stop_audio_playback()
+        self.source_view_registry[source_idx].play_audio()
 
     def on_show_ampenv(self):
         if self.showAmpenvToggle.isChecked():
@@ -472,16 +496,33 @@ class AudioView(widgets.QWidget):
         else:
             time_center = np.mean(self.view_state.get("current_range"))
 
-        if direction < 0 and read_default.WINDOW_SIZE < read_default.MAX_WINDOW_SIZE:
-            read_default.set(
-                "WINDOW_SIZE",
-                min(read_default.MAX_WINDOW_SIZE, 1.1 * read_default.WINDOW_SIZE)
-            )
-        elif direction > 0 and read_default.WINDOW_SIZE > read_default.MIN_WINDOW_SIZE:
-            read_default.set(
-                "WINDOW_SIZE",
-                max(read_default.MIN_WINDOW_SIZE, read_default.WINDOW_SIZE / 1.1)
-            )
+        if direction in (-1, 1):
+            if direction < 0 and read_default.WINDOW_SIZE < read_default.MAX_WINDOW_SIZE:
+                read_default.set(
+                    "WINDOW_SIZE",
+                    min(read_default.MAX_WINDOW_SIZE, 1.1 * read_default.WINDOW_SIZE)
+                )
+            elif direction > 0 and read_default.WINDOW_SIZE > read_default.MIN_WINDOW_SIZE:
+                read_default.set(
+                    "WINDOW_SIZE",
+                    max(read_default.MIN_WINDOW_SIZE, read_default.WINDOW_SIZE / 1.1)
+                )
+        elif direction in ("selection", "max"):
+            if direction == "selection":
+                if self.view_state.has("selected_range"):
+                    t0, t1 = self.view_state.get("selected_range")
+                    time_center = np.mean([t0, t1])
+                    read_default.set(
+                        "WINDOW_SIZE",
+                        t1 - t0
+                    )
+                else:
+                    return
+            elif direction == "max":
+                read_default.set(
+                    "WINDOW_SIZE",
+                    read_default.MAX_WINDOW_SIZE
+                )
 
         steps = self.timescroll_manager.pages()
         self.scrollbar.setMaximum(steps[-1] - 1)
@@ -535,9 +576,6 @@ class AudioView(widgets.QWidget):
         self.source_view_registry = []
         for i, source in enumerate(self.state.get("sources")):
             source_view = SourceView(source_idx=i, events=self.events)
-            source_label = widgets.QLabel(source["name"])
-            source_label.setFont(fonts.subheading)
-            self.currentSourcesLayout.addWidget(source_label)
             self.currentSourcesLayout.addWidget(source_view)
             self.source_view_registry.append(source_view)
             source_view.setVisible(not source["hidden"])
@@ -545,6 +583,7 @@ class AudioView(widgets.QWidget):
         self.on_redraw()
 
     def on_range_changed(self):
+        self.stop_audio_playback()
         self._update_time_label()
         self.on_redraw()
 
@@ -691,6 +730,11 @@ class SourceView(widgets.QWidget):
         self.source = self.state.get("sources")[self.source_idx]
         self._drawn_intervals = []
 
+        # Set up playback line
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.advance_playback_line)
+        self._playback_line_pos = -1
+
         self.init_ui()
 
         self.events.rangeSelected.connect(self.on_range_selected)
@@ -699,9 +743,21 @@ class SourceView(widgets.QWidget):
 
         self._highlight_rect = None
         self._drawn_intervals = []
+        self.reset_playback_line(visible=False)
 
     def init_ui(self):
         self.drag_curves = {}
+
+        source_label_layout = widgets.QHBoxLayout()
+        source_label = widgets.QLabel(self.source["name"])
+        source_label.setFont(fonts.subheading)
+        play_button = widgets.QPushButton("Play")
+        play_button.clicked.connect(partial(self.events.playAudio.emit, self.source_idx))
+
+        source_label_layout = widgets.QHBoxLayout()
+        source_label_layout.addWidget(source_label)
+        source_label_layout.addStretch()
+        source_label_layout.addWidget(play_button)
 
         self.spectrogram_viewbox = SpectrogramViewBox()
         self.spectrogram_plot = pg.PlotWidget(viewBox=self.spectrogram_viewbox)
@@ -713,7 +769,9 @@ class SourceView(widgets.QWidget):
         self.spectrogram_plot.selected_range_line_stop = pg.InfiniteLine()
         self.spectrogram_plot.spec_range_line_start = pg.InfiniteLine(angle=0)
         self.spectrogram_plot.spec_range_line_stop = pg.InfiniteLine(angle=0)
+        self.spectrogram_plot.playback_line = pg.InfiniteLine()
 
+        self.spectrogram_plot.addItem(self.spectrogram_plot.playback_line)
         self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_start)
         self.spectrogram_plot.addItem(self.spectrogram_plot.selected_range_line_stop)
         self.spectrogram_plot.addItem(self.spectrogram_plot.spec_range_line_start)
@@ -729,6 +787,7 @@ class SourceView(widgets.QWidget):
         self.spectrogram_viewbox.addItem(self.ampenv_plot)
 
         layout = widgets.QVBoxLayout()
+        layout.addLayout(source_label_layout)
         layout.addWidget(self.spectrogram_plot)
         self.setLayout(layout)
 
@@ -736,6 +795,64 @@ class SourceView(widgets.QWidget):
         self.spectrogram_viewbox.dragInProgress.connect(self.on_drag_in_progress)
         self.spectrogram_viewbox.clicked.connect(self.on_click)
         self.spectrogram_viewbox.zoomEvent.connect(self.on_zoom)
+
+    def reset_playback_line(self, start_at=None, visible=False):
+        self.timer.stop()
+        self._playback_line_pos = start_at or -1
+        self.spectrogram_plot.playback_line.setVisible(visible)
+        if self.view_state.has("playback_range"):
+            self.view_state.clear("playback_range")
+
+    def advance_playback_line(self):
+        """Step the playback line forward in time
+
+        Reset the line when it reaches the end
+        """
+        t0, _ = self.view_state.get("current_range")
+
+        if not self.view_state.has("playback_range"):
+            max_playback_line_pos = int(
+                read_default.SPEC_SAMPLE_RATE *
+                read_default.WINDOW_SIZE
+            )
+        else:
+            _, selection_t1 = self.view_state.get("playback_range")
+            max_playback_line_pos = int(
+                read_default.SPEC_SAMPLE_RATE *
+                (selection_t1 - t0)
+            )
+
+        if self._playback_line_pos < max_playback_line_pos:
+            self._playback_line_pos += read_default.PLAYBACK_LINE_STEP
+            self.spectrogram_plot.playback_line.setValue(self._playback_line_pos)
+        else:
+            self.reset_playback_line(visible=False)
+
+    def play_audio(self):
+        """Play the sound thats in the currently selected window"""
+        if self.view_state.has("selected_range"):
+            t0, t1 = self.view_state.get("selected_range")
+        else:
+            t0, t1 = self.view_state.get("current_range")
+
+        t_arr, sig = self.state.get("sound_object").time_slice(t0, t1)
+        sig -= np.mean(sig, axis=0)
+        start_idx = int(round((
+            (t0 - self.view_state.get("current_range")[0]) *
+            read_default.SPEC_SAMPLE_RATE
+        )))
+        self.reset_playback_line(start_at=start_idx, visible=True)
+        self.view_state.set("playback_range", [t0, t1])
+        sd.play(
+            sig[:, self.source["channel"]],
+            self.state.get("sound_object").sampling_rate,
+            blocking=False
+        )
+
+        self.timer.start(
+            read_default.PLAYBACK_LINE_STEP * 1000 /
+            read_default.SPEC_SAMPLE_RATE
+        )
 
     def _set_spectrogram_plot_limits(self):
         """
@@ -857,8 +974,10 @@ class SourceView(widgets.QWidget):
             self.on_merge_selection()
         elif shortcut == "Z":
             self.on_find_in_selection(0, mode="max_zscore")
+        elif shortcut == "Space":
+            self.events.playAudio.emit(self.source_idx)
 
-    def on_menu_selection(self, item):
+    def on_menu_selection(self, item, pos=None):
         if item == "search":
             self.on_find_in_selection(1)
         elif item == "merge":
@@ -867,6 +986,10 @@ class SourceView(widgets.QWidget):
             self.on_delete_selection()
         elif item == "desperate":
             self.on_find_in_selection(0, mode="max_zscore")
+        elif item == "zoom_in":
+            self.events.zoomEvent[str].emit("selection")
+        elif item == "zoom_out":
+            self.events.zoomEvent[str].emit("max")
 
     def on_zoom(self, direction, pos):
         """Pass the zoom signal up to the AudioView
@@ -1231,7 +1354,12 @@ class SourceView(widgets.QWidget):
             if start_t > t2:
                 break
 
-            if (t1 <= start_t <= t2) or (t1 <= end_t <= t2):
+            interval_contained = (
+                (t1 <= start_t <= t2) or
+                (t1 <= end_t <= t2) or
+                (start_t <= t1 <= t2 <= end_t)
+            )
+            if interval_contained:
                 start_frac = (start_t - t1) / win_size
                 duration_frac = (end_t - start_t) / win_size
 
@@ -1258,8 +1386,13 @@ class VocalPeriodsView(widgets.QScrollArea):
         self.state = AppState()
         self.view_state = ViewState()
         self.events = events
+        self.thread = None
+
+        self.currently_selected = None
 
         self.init_ui()
+
+        self.events.dataLoaded.connect(self.on_data_loaded)
 
     def init_ui(self):
         self.mainLayout = widgets.QHBoxLayout()
@@ -1276,6 +1409,8 @@ class VocalPeriodsView(widgets.QScrollArea):
 
         self.setLayout(self.mainLayout)
 
+        self.all_vocal_period_buttons = []
+
         self.detectButton.clicked.connect(self.on_detect)
 
     def clear_vocal_periods(self):
@@ -1283,6 +1418,20 @@ class VocalPeriodsView(widgets.QScrollArea):
             item = self.vocalPeriodsLayout.itemAt(i)
             if item.widget():
                 item.widget().deleteLater()
+        self.all_vocal_period_buttons = []
+
+    def _reset_thread(self):
+        if self.thread is not None:
+            self.thread.exit()
+        self.thread = QThread(self)
+        return self.thread
+
+    def closeEvent(self):
+        if self.thread is not None:
+            self.thread.stop()
+
+    def on_data_loaded(self):
+        self.clear_vocal_periods()
 
     def on_detect(self):
         """
@@ -1293,33 +1442,41 @@ class VocalPeriodsView(widgets.QScrollArea):
         # Detect on all channels with sources - merge them, then present them as options
         audio_signal = self.state.get("sound_object")
         channels = np.unique([source["channel"] for source in self.state.get("sources")])
-        all_events = []
-        for channel in channels:
-            events = threshold_all_events(
-                    audio_signal,
-                    window_size=20.0,
-                    channel=channel,
-                    t_start=None,
-                    t_stop=None,
-                    ignore_width=0.01,
-                    min_size=0.1,
-                    fuse_duration=2.0,
-                    threshold_z=2.0,
-                    amp_env_mode="broadband"
-            )
-            all_events += events
 
-        events = fuse_events(all_events)
+        self._last_spec_key = uuid.uuid4().hex
+        self.worker = VocalPeriodsWorker(
+            self._last_spec_key,
+            channels,
+            audio_signal,
+        )
+        self.worker.finished.connect(partial(
+            self.on_vocal_periods_complete,
+        ))
+        self._reset_thread()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.compute)
+        self.thread.start()
 
-        # first_source["vocal_periods"] = events
-        for event in events:
-            button = widgets.QPushButton("{:.2f}\nto\n{:.2f}".format(event[0], event[1]))
+    def on_vocal_periods_complete(self, key, vocal_periods):
+        if key != self._last_spec_key:
+            return
+
+        for i, period in enumerate(vocal_periods):
+            button = widgets.QPushButton("{:.2f}\nto\n{:.2f}".format(period[0], period[1]))
+            button.setCheckable(True)
+            button.clicked.connect(partial(self.on_vocal_period_clicked, i, period))
             self.vocalPeriodsLayout.addWidget(button)
             button.setStyleSheet("width:100px; height: 100px;")
-            button.clicked.connect(partial(self.on_event_clicked, event))
+            self.all_vocal_period_buttons.append(button)
 
-    def on_event_clicked(self, event):
-        t1, t2 = event
+    def on_vocal_period_clicked(self, idx, period):
+        # check the relevant button
+        self.currently_selected = idx
+
+        for i, button in enumerate(self.all_vocal_period_buttons):
+            button.setChecked(i == idx)
+
+        t1, t2 = period
         t_center = np.mean([t1, t2])
         self.events.setPosition[object, object].emit(t1, TimeScrollManager.ALIGN_LEFT)
         self.view_state.set("highlighted_range", (t1, t2))
