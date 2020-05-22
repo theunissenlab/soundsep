@@ -12,11 +12,21 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 3. `virtualenv env -p python3`
 
-4. `pip install -r requirements.txt`
+4. `source env/bin/activate`
+
+5. `pip install -r requirements.txt`
 
 #### Option 2.
 
 1. Use an installer found at https://github.com/kevinyu/soundsep/releases
+
+
+### Starting the GUI
+
+1. `source env/bin/activate`
+
+2. `fbs run`
+
 
 ### Loading a file
 
