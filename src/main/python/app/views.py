@@ -242,10 +242,10 @@ class SourceEditorView(widgets.QWidget):
         self.editButton.setIcon(editIcon)
         self.editButton.setToolTip("Edit source name/channel")
         self.editButton.setCheckable(True)
-        deleteIcon = gui.QIcon("images/delete_icon.svg")
+        deleteIcon = gui.QIcon(context.get_resource("images/delete_icon.svg"))
         self.deleteButton = widgets.QToolButton(self)
         self.deleteButton.setIcon(deleteIcon)
-        eyeIcon = gui.QIcon("images/eye_icon.svg")
+        eyeIcon = gui.QIcon(context.get_resource("images/eye_icon.svg"))
         self.hideButton = widgets.QToolButton(self)
         self.hideButton.setCheckable(True)
         if self.source["hidden"]:

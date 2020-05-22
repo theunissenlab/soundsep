@@ -1,6 +1,4 @@
 import sys
-sys.path.append("code/soundsep")
-
 import glob
 import os
 from functools import partial
@@ -318,10 +316,11 @@ class App(widgets.QMainWindow):
 
 
 if __name__ == '__main__':
-    appctxt = ApplicationContext()       # 1. Instantiate ApplicationContext
+    from app.context import context
     window = App()
     window.setFont(fonts.default)
+    window.setStyle(widgets.QStyleFactory.create("Fusion"))
     window.setStyleSheet(qss)
     window.show()
-    exit_code = appctxt.app.exec_()      # 2. Invoke appctxt.app.exec_()
+    exit_code = context.app.exec_()      # 2. Invoke appctxt.app.exec_()
     sys.exit(exit_code)
