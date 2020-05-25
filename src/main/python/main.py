@@ -14,7 +14,11 @@ from PyQt5 import QtCore
 from PyQt5 import QtWidgets as widgets
 from fbs_runtime.application_context.PyQt5 import ApplicationContext
 
-from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
+from interfaces.audio import (
+    LazyMultiWavInterface,
+    LazySignalInterface,
+    LazyWavInterface
+)
 
 from app.state import AppState, ViewState
 from app.views import MainView
@@ -230,12 +234,12 @@ class App(widgets.QMainWindow):
     def _load_dir(self, dir):
         data_directory = os.path.join(dir, "outputs")
         wav_files = glob.glob(os.path.join(dir, "ch[0-9]*.wav"))
+        lazy_file = os.path.join(dir, "lazy.npy")
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
 
         self.save_file = os.path.join(data_directory, "save.npy")
-
-        if not len(wav_files):
+        if not len(wav_files) and not os.path.exists(lazy_file):
             widgets.QMessageBox.warning(
                 self,
                 "Error",
@@ -245,8 +249,10 @@ class App(widgets.QMainWindow):
 
         if len(wav_files) > 1:
             sound_object = LazyMultiWavInterface.create_from_directory(dir, force_equal_length=True)
-        else:
+        elif len(wav_files) == 1:
             sound_object = LazyWavInterface(wav_files[0])
+        elif os.path.exists(lazy_file):
+            sound_object = LazySignalInterface(lazy_file)
 
         self.state.set("sources", [])
 
