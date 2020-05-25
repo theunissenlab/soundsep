@@ -233,8 +233,9 @@ class App(widgets.QMainWindow):
                 "No wav files found.",
             )
             return
+
         if len(wav_files) > 1:
-            sound_object = LazyMultiWavInterface.create_from_directory(dir)
+            sound_object = LazyMultiWavInterface.create_from_directory(dir, force_equal_length=True)
         else:
             sound_object = LazyWavInterface(wav_files[0])
 

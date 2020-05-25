@@ -25,6 +25,10 @@ class AudioSliceInterface(object):
     def __len__(self):
         raise NotImplementedError
 
+    @property
+    def t_max(self):
+        return self._frames / self.sampling_rate
+
 
 class NumpyDataInterface(AudioSliceInterface):
     """Read amplitude data from a numpy array
@@ -33,6 +37,7 @@ class NumpyDataInterface(AudioSliceInterface):
         self._data = data
         self.sampling_rate = sampling_rate
         self.n_channels = self._data.shape[1]
+        self._frames = self._data.shape[0]
 
     def __len__(self):
         return self._data.shape[0]
@@ -74,10 +79,6 @@ class LazyWavInterface(AudioSliceInterface):
 
         return data
 
-    @property
-    def t_max(self):
-        return self._frames / self.sampling_rate
-
 
 class LazyMultiWavInterface(LazyWavInterface):
     """Read amplitude data directly from multiple wav files (1 per channel)
@@ -93,7 +94,7 @@ class LazyMultiWavInterface(LazyWavInterface):
     """
 
     @classmethod
-    def create_from_directory(cls, from_directory):
+    def create_from_directory(cls, from_directory, force_equal_length=False):
         """Convenience function to create a LazyMultiWavInterface from a
         directory containing wav files named ch0.wav, ch1.wav, ch2.wav, etc.
         """
@@ -106,22 +107,38 @@ class LazyMultiWavInterface(LazyWavInterface):
                     "at {}".format(from_directory))
         filenames = sorted(filenames, key=lambda x: int(re.search(regexp, x).groups()[0]))
 
-        return cls(filenames)
+        return cls(filenames, force_equal_length=force_equal_length)
 
-    def __init__(self, filenames, dtype=np.float64):
+    def __init__(self, filenames, dtype=np.float64, force_equal_length=False):
+        """
+
+        Parameters
+        ==========
+        filenames:
+            list of strings with file paths to wav files
+        dtype: (default: np.float64)
+            datatype contained in wav files
+        force_equal_length: (default: False)
+            if the wav files are not of the same length, will determine
+            an offset (in # of samples) for each channel so that they
+            match the shortest file's duration
+        """
         self._dtype = dtype
         self._filenames = filenames
         self.sampling_rate = None
         self._frames = None
         self.n_channels = len(filenames)
 
-        for filename in filenames:
+        _channel_durations = []
+        for file_idx, filename in enumerate(filenames):
             with soundfile.SoundFile(filename) as f:
                 if self.sampling_rate is None:
                     self.sampling_rate = f.samplerate
 
                 if self._frames is None:
                     self._frames = f.frames
+
+                _channel_durations.append(f.frames)
 
                 if self.sampling_rate != f.samplerate:
                     raise Exception("All .wav files must have the same sample rate\n"
@@ -133,8 +150,9 @@ class LazyMultiWavInterface(LazyWavInterface):
                         )
                     )
 
-                if self._frames != f.frames:
+                if not force_equal_length and self._frames != f.frames:
                     raise Exception("All .wav files must have the same length\n"
+                        "if force_equal_length is not set to True \n"
                         "{}: {} but {}: {}".format(
                             filenames[0],
                             self._frames,
@@ -143,6 +161,13 @@ class LazyMultiWavInterface(LazyWavInterface):
                         )
                     )
 
+        if force_equal_length:
+            min_frames = np.min(_channel_durations)
+            self._offsets = [frames - min_frames for frames in _channel_durations]
+            self._frames = min_frames
+        else:
+            self._offsets = [0 for _ in self._channel_durations]
+
     def _time_slice(self, t_start, t_stop):
         offset = int(np.round(t_start * self.sampling_rate))
         duration = int(np.round((t_stop - t_start) * self.sampling_rate))
@@ -150,7 +175,11 @@ class LazyMultiWavInterface(LazyWavInterface):
         data = np.zeros((duration, self.n_channels))
 
         for ch, filename in enumerate(self._filenames):
-            ch_data, _ = soundfile.read(filename, duration, offset, dtype=self._dtype)
+            ch_data, _ = soundfile.read(
+                filename,
+                duration,
+                offset + self._offsets[ch],
+                dtype=self._dtype)
 
             if ch_data.ndim == 1:
                 ch_data = ch_data[:, None]
