@@ -200,7 +200,6 @@ class SongephysWebInterface(AudioSliceInterface):
     def __init__(self, url):
         self._url = url
         response = requests.get(self._url)
-        print(dir(response))
         result = json.loads(response.text)
         self._frames = result["frames"]
         self.n_channels = result["n_channels"]
@@ -209,14 +208,16 @@ class SongephysWebInterface(AudioSliceInterface):
 
     def _read_cache(self, t_start, t_stop):
         for cache_range, cached in self._caches:
-            print(cache_range, t_start, t_stop)
             if (t_start, t_stop) == cache_range:
-                print("matched")
                 result = cached
                 break
         else:
-            response = requests.get(self._form_url(t_start, t_stop))
-            result = json.loads(response.text)
+            try:
+                response = requests.get(self._form_url(t_start, t_stop))
+            except requests.exceptions.ConnectionError:
+                raise Exception("Could not connect to server")
+            else:
+                result = json.loads(response.text)
 
         self._caches = self._caches[-4:]
         self._caches.append(((t_start, t_stop), result))

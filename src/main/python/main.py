@@ -20,6 +20,7 @@ from app.state import AppState, ViewState
 from app.views import MainView
 from app.settings import fonts, read_default
 from app.style import qss
+from app.web import WebLoader
 
 
 class Events(widgets.QWidget):
@@ -200,32 +201,20 @@ class App(widgets.QMainWindow):
             self.load_dir(selected_file)
 
     def run_web_loader(self):
-        self.dialog = widgets.QDialog(self)
-
-        layout = widgets.QGridLayout()
-        urlLabel = widgets.QLabel(self, text="URL")
-        self.urlInput = widgets.QLineEdit(self, text="")
-        layout.addWidget(urlLabel, 0, 0)
-        layout.addWidget(self.urlInput, 0, 1)
-
-        submitButton = widgets.QPushButton("Submit")
-        layout.addWidget(submitButton, 2, 1)
-        submitButton.clicked.connect(self._load_web)
-
-        self.dialog.setLayout(layout)
-        self.dialog.setWindowTitle("Load audio from songephys endpoint")
-        self.dialog.setMinimumWidth(500)
-        self.dialog.setMaximumWidth(self.dialog.width())
-        self.dialog.setMaximumHeight(self.dialog.height())
+        self.dialog = WebLoader(self)
+        self.dialog.selectEvent.connect(self._load_web)
         self.dialog.show()
 
-    def _load_web(self):
+    def _load_web(self, url):
+        self.state.reset()
+
+        self.dialog.close()
         self.save_file = None
         self.state.set("sources", [])
-        sound_object = SongephysWebInterface(self.urlInput.text())
+
+        sound_object = SongephysWebInterface(url)
         self.state.set("sound_object", sound_object)
-        self.state.set("sound_file", self.urlInput.text())
-        self.dialog.close()
+        self.state.set("sound_file", url)
         self.state.set("web_mode", True)
         self.events.dataLoaded.emit()
 
