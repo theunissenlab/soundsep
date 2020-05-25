@@ -2,6 +2,8 @@
 
 This GUI is designed to make it easy to segment vocalizations across multiple channels from multiple experimental sources.
 
+![Control diagram](documentation/diagrams/gui_labels.png)
+
 ### Installation
 
 #### Option 1: Installing from github
