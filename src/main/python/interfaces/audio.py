@@ -1,6 +1,8 @@
+import json
 import glob
 import os
 import re
+import requests
 
 import numpy as np
 import soundfile
@@ -191,6 +193,45 @@ class LazyMultiWavInterface(LazyWavInterface):
             data[:, ch] = ch_data[:, 0]
 
         return data
+
+
+class SongephysWebInterface(AudioSliceInterface):
+    """Synchronous requests to server for audio data"""
+    def __init__(self, url):
+        self._url = url
+        response = requests.get(self._url)
+        print(dir(response))
+        result = json.loads(response.text)
+        self._frames = result["frames"]
+        self.n_channels = result["n_channels"]
+        self.sampling_rate = result["sampling_rate"]
+        self._caches = []
+
+    def _read_cache(self, t_start, t_stop):
+        for cache_range, cached in self._caches:
+            print(cache_range, t_start, t_stop)
+            if (t_start, t_stop) == cache_range:
+                print("matched")
+                result = cached
+                break
+        else:
+            response = requests.get(self._form_url(t_start, t_stop))
+            result = json.loads(response.text)
+
+        self._caches = self._caches[-4:]
+        self._caches.append(((t_start, t_stop), result))
+
+        return result
+
+    def __len__(self):
+        return self._frames
+
+    def _form_url(self, t_start, t_stop):
+        return self._url + "/{}/{}".format(t_start, t_stop)
+
+    def _time_slice(self, t_start, t_stop):
+        result = self._read_cache(t_start, t_stop)
+        return np.array(result["sig"]).astype(np.float) / 10**result["exp"]
 
 
 '''

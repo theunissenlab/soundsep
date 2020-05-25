@@ -14,7 +14,7 @@ from PyQt5 import QtCore
 from PyQt5 import QtWidgets as widgets
 from fbs_runtime.application_context.PyQt5 import ApplicationContext
 
-from interfaces.audio import LazyMultiWavInterface, LazyWavInterface
+from interfaces.audio import LazyMultiWavInterface, LazyWavInterface, SongephysWebInterface
 
 from app.state import AppState, ViewState
 from app.views import MainView
@@ -79,6 +79,9 @@ class App(widgets.QMainWindow):
         self.open_directory_action = widgets.QAction("Open Directory", self)
         self.open_directory_action.triggered.connect(self.run_directory_loader)
 
+        self.load_url_action = widgets.QAction("Load URL", self)
+        self.load_url_action.triggered.connect(self.run_web_loader)
+
         self.open_recent_actions = []
         for i in range(read_default.MAX_RECENT_FILES):
             action = widgets.QAction("", self)
@@ -127,6 +130,7 @@ class App(widgets.QMainWindow):
 
         fileMenu = mainMenu.addMenu("&File")
         fileMenu.addAction(self.open_directory_action)
+        fileMenu.addAction(self.load_url_action)
         self.openRecentMenu = fileMenu.addMenu("&Open Recent")
         for i in range(read_default.MAX_RECENT_FILES):
             self.openRecentMenu.addAction(self.open_recent_actions[i])
@@ -195,6 +199,36 @@ class App(widgets.QMainWindow):
         if selected_file:
             self.load_dir(selected_file)
 
+    def run_web_loader(self):
+        self.dialog = widgets.QDialog(self)
+
+        layout = widgets.QGridLayout()
+        urlLabel = widgets.QLabel(self, text="URL")
+        self.urlInput = widgets.QLineEdit(self, text="")
+        layout.addWidget(urlLabel, 0, 0)
+        layout.addWidget(self.urlInput, 0, 1)
+
+        submitButton = widgets.QPushButton("Submit")
+        layout.addWidget(submitButton, 2, 1)
+        submitButton.clicked.connect(self._load_web)
+
+        self.dialog.setLayout(layout)
+        self.dialog.setWindowTitle("Load audio from songephys endpoint")
+        self.dialog.setMinimumWidth(500)
+        self.dialog.setMaximumWidth(self.dialog.width())
+        self.dialog.setMaximumHeight(self.dialog.height())
+        self.dialog.show()
+
+    def _load_web(self):
+        self.save_file = None
+        self.state.set("sources", [])
+        sound_object = SongephysWebInterface(self.urlInput.text())
+        self.state.set("sound_object", sound_object)
+        self.state.set("sound_file", self.urlInput.text())
+        self.dialog.close()
+        self.state.set("web_mode", True)
+        self.events.dataLoaded.emit()
+
     def load_dir(self, dir):
         if not os.path.isdir(dir):
             raise IOError("{} is not a directory".format(dir))
@@ -250,6 +284,9 @@ class App(widgets.QMainWindow):
 
         self.state.set("sound_object", sound_object)
         self.state.set("sound_file", dir)
+        if self.state.has("web_mode"):
+            self.state.clear("web_mode")
+
         self.events.dataLoaded.emit()
 
     def open_recent(self, i):

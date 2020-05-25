@@ -498,15 +498,19 @@ class AudioView(widgets.QWidget):
             time_center = np.mean(self.view_state.get("current_range"))
 
         if direction in (-1, 1):
+            if self.state.has("web_mode"):
+                scale = 2
+            else:
+                scale = 1.1
             if direction < 0 and read_default.WINDOW_SIZE < read_default.MAX_WINDOW_SIZE:
                 read_default.set(
                     "WINDOW_SIZE",
-                    min(read_default.MAX_WINDOW_SIZE, 1.1 * read_default.WINDOW_SIZE)
+                    min(read_default.MAX_WINDOW_SIZE, scale * read_default.WINDOW_SIZE)
                 )
             elif direction > 0 and read_default.WINDOW_SIZE > read_default.MIN_WINDOW_SIZE:
                 read_default.set(
                     "WINDOW_SIZE",
-                    max(read_default.MIN_WINDOW_SIZE, read_default.WINDOW_SIZE / 1.1)
+                    max(read_default.MIN_WINDOW_SIZE, read_default.WINDOW_SIZE / scale)
                 )
         elif direction in ("selection", "max"):
             if direction == "selection":
