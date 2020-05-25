@@ -882,6 +882,19 @@ class SourceView(widgets.QWidget):
         best_choice = np.searchsorted(choices, first_guess)
         return choices[best_choice]
 
+    def _seconds_to_human_readable(self, seconds):
+        """Converts raw time in seconds to human readable format (1h2m 3.3s)"""
+        result = ""
+        hours = int(seconds / (60 * 60))
+        minutes = int((seconds - hours * (60 * 60)) / 60)
+        seconds = seconds - (minutes * 60) - (hours * 60 * 60)
+        if hours:
+            result += "{:d}:".format(hours)
+        if minutes:
+            result += "{:d}:".format(minutes)
+        result += "{:.1f}".format(seconds)
+        return result
+
     def _draw_xaxis(self):
         ax_spec = self.spectrogram_plot.getAxis("bottom")
 
@@ -894,7 +907,7 @@ class SourceView(widgets.QWidget):
         for t in np.arange(-offset, win_size - offset, spacing):
             # Choose ticks at the nearest multiples of spacing
             samples = int(np.round(t * read_default.SPEC_SAMPLE_RATE))
-            ticks.append([samples, np.around(base_t + t, 2)])
+            ticks.append([samples, self._seconds_to_human_readable(np.around(base_t + t, 2))])
 
         ax_spec.setTicks([ticks])
 
