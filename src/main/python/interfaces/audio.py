@@ -19,6 +19,10 @@ class AudioSliceInterface(object):
         t_arr = np.arange(len(data)) / self.sampling_rate
         return t_arr, data
 
+    @property
+    def t_max(self):
+        return self._frames / self.sampling_rate
+
     def _time_slice(self, t_start, t_stop):
         raise NotImplementedError
 
@@ -193,14 +197,16 @@ class LazyMultiWavInterface(LazyWavInterface):
         return data
 
 
-'''
 class LazySignalInterface(AudioSliceInterface):
     """Placeholder for reading from custom lazy loading object
     """
-    def __init__(self, lazy_object):
-        self._lazy_object = lazy_object
-        self.sampling_rate = self._lazy_object.signals[0]["mic"].sampling_rate
+    def __init__(self, lazy_path):
+        self._path = lazy_path
+        self._lazy_object = np.load(self._path, allow_pickle=True)[()]
+        self.sampling_rate = self._lazy_object._signals["mic"][0].sampling_rate
+        self._frames = int(self._lazy_object.max_time() * self.sampling_rate)
+        self.n_channels = self._lazy_object._signals["mic"][0].M
 
     def _time_slice(self, t_start, t_stop):
-        return self._lazy_object.time_slice(t_start, t_stop)
-'''
+        result = self._lazy_object.time_slice(t_start, t_stop, signal="mic")
+        return result.data
