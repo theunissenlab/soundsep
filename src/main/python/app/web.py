@@ -10,7 +10,7 @@ from app.settings import read_default
 
 
 class Selector(widgets.QFrame):
-    selectEvent = pyqtSignal(str)
+    selectEvent = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -67,7 +67,7 @@ class Selector(widgets.QFrame):
             itemWidget = widgets.QWidget()
             layout = widgets.QGridLayout()
             selectButton = widgets.QPushButton("Select")
-            selectButton.clicked.connect(partial(self.selectEvent.emit, item["path"]))
+            selectButton.clicked.connect(partial(self.selectEvent.emit, item["name"], item["path"]))
             selectButton.setDisabled(not item["has_lazy"])
             layout.addWidget(widgets.QLabel(item["name"]), 0, 0, 1, 2)
             label = widgets.QLabel("Ready" if item["has_lazy"] else "")
@@ -85,7 +85,7 @@ class Selector(widgets.QFrame):
 
 
 class WebLoader(widgets.QDialog):
-    selectEvent = pyqtSignal(str)
+    selectEvent = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -148,6 +148,6 @@ class WebLoader(widgets.QDialog):
             read_default.set("SERVER_URL", url)
             self.chooseDataTabs.setDisabled(False)
 
-    def _on_select(self, path):
+    def _on_select(self, name, path):
         url = self.serverUrlInput.text()
-        self.selectEvent.emit(url + path)
+        self.selectEvent.emit(name, url + path)

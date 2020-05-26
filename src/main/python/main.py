@@ -205,12 +205,50 @@ class App(widgets.QMainWindow):
         self.dialog.selectEvent.connect(self._load_web)
         self.dialog.show()
 
-    def _load_web(self, url):
+    def _load_web(self, name, url):
+        options = widgets.QFileDialog.Options()
+        save_to = widgets.QFileDialog.getExistingDirectory(
+            self,
+            "Choose save directory",
+            name,
+            options=options
+        )
+        if not save_to:
+            widgets.QMessageBox.warning(
+                self,
+                "Warning",
+                "Save directory was not selected.",
+            )
+            return
+
+        if os.path.basename(save_to) == name:
+            save_dir = save_to
+        else:
+            save_dir = os.path.join(save_to, name)
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+
+        widgets.QMessageBox.information(
+            self,
+            "Save directory assigned",
+            "{} will be used to save data from\n"
+            "{}".format(save_dir, url),
+        )
+
+        data_directory = os.path.join(save_dir, "outputs")
+        if not os.path.exists(data_directory):
+            os.makedirs(data_directory)
+
+        self.save_file = os.path.join(data_directory, "save.npy")
+
         self.state.reset()
 
+        if os.path.exists(self.save_file):
+            loaded_data = np.load(self.save_file, allow_pickle=True)[()]
+            if "sources" in loaded_data:
+                self.state.set("sources", loaded_data["sources"])
+
         self.dialog.close()
-        self.save_file = None
-        self.state.set("sources", [])
 
         sound_object = SongephysWebInterface(url)
         self.state.set("sound_object", sound_object)
