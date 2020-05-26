@@ -95,8 +95,14 @@ class App(widgets.QMainWindow):
             action.triggered.connect(partial(self.open_recent, i))
             self.open_recent_actions.append(action)
 
+        self.load_sources_action = widgets.QAction("Load Sources", self)
+        self.load_sources_action.triggered.connect(self.load_sources)
+
         self.save_action = widgets.QAction("Save", self)
         self.save_action.triggered.connect(self.save)
+        self.save_as_action = widgets.QAction("Save As", self)
+        self.save_as_action.triggered.connect(partial(self.save, save_as=True))
+
         self.quit_action = widgets.QAction("Close", self)
         self.quit_action.triggered.connect(self.close)
         self.export_action = widgets.QAction("Export Pickle", self)
@@ -141,9 +147,12 @@ class App(widgets.QMainWindow):
         for i in range(read_default.MAX_RECENT_FILES):
             self.openRecentMenu.addAction(self.open_recent_actions[i])
         fileMenu.addSeparator()
+        fileMenu.addAction(self.load_sources_action)
+        fileMenu.addSeparator()
         fileMenu.addAction(self.export_action)
         fileMenu.addAction(self.export_csv_action)
         fileMenu.addAction(self.save_action)
+        fileMenu.addAction(self.save_as_action)
         fileMenu.addSeparator()
         fileMenu.addAction(self.quit_action)
 
@@ -322,25 +331,52 @@ class App(widgets.QMainWindow):
 
         self.events.dataLoaded.emit()
 
+    def load_sources(self):
+        options = widgets.QFileDialog.Options()
+        file_name, _ = widgets.QFileDialog.getOpenFileName(
+            self,
+            "Load sources",
+            self.save_file,
+            "*",
+            options=options)
+
+        if file_name:
+            loaded_data = np.load(file_name, allow_pickle=True)[()]
+            if "sources" in loaded_data:
+                self.state.set("sources", loaded_data["sources"])
+                self.events.sourcesChanged.emit()
+
     def open_recent(self, i):
         self.load_dir(self.settings.value("OPEN_RECENT")[-i])
 
-    def save(self):
-        msg = ("Are you sure you want to save?\n"
-            "Saving will overwrite any previously saved data.")
-        reply = widgets.QMessageBox.question(
-                self,
-                'Save Confirmation',
-                msg,
-                widgets.QMessageBox.Yes,
-                widgets.QMessageBox.No)
-        if reply == widgets.QMessageBox.No:
-            return
+    def save(self, save_as=False):
+        if not save_as:
+            msg = ("Are you sure you want to save?\n"
+                "Saving will overwrite any previously saved data.")
+            reply = widgets.QMessageBox.question(
+                    self,
+                    'Save Confirmation',
+                    msg,
+                    widgets.QMessageBox.Yes,
+                    widgets.QMessageBox.No)
+            if reply == widgets.QMessageBox.No:
+                return
 
         save_data = {}
         if self.state.has("sources"):
             save_data["sources"] = self.state.get("sources")
         # save_data["_VIEW_STATE"] = dict(self.view_state.__dict__)
+
+        if save_as:
+            options = widgets.QFileDialog.Options()
+            save_file, _ = widgets.QFileDialog.getSaveFileName(
+                self,
+                "Save intervals as",
+                self.save_file,
+                "*",
+                options=options)
+        else:
+            save_file = self.save_file
 
         np.save(self.save_file, save_data)
         widgets.QMessageBox.about(

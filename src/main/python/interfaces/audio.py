@@ -172,7 +172,7 @@ class LazyMultiWavInterface(LazyWavInterface):
             self._offsets = [frames - min_frames for frames in _channel_durations]
             self._frames = min_frames
         else:
-            self._offsets = [0 for _ in self._channel_durations]
+            self._offsets = [0 for _ in _channel_durations]
 
     def _time_slice(self, t_start, t_stop):
         offset = int(np.round(t_start * self.sampling_rate))

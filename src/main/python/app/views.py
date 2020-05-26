@@ -1,5 +1,6 @@
-from functools import partial
 import uuid
+from contextlib import contextmanager
+from functools import partial
 
 import pandas as pd
 import pyqtgraph as pg
@@ -328,6 +329,7 @@ class AudioView(widgets.QWidget):
         self.view_state = ViewState()
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
         self.timescroll_manager = TimeScrollManager(None)
+        self._redrawing = False
 
         self.init_ui()
 
@@ -397,6 +399,23 @@ class AudioView(widgets.QWidget):
         self.mainLayout.addLayout(self.windowInfoLayout)
 
         self.setLayout(self.mainLayout)
+
+    @contextmanager
+    def redraw_context(self, *args, **kwargs):
+        # Context manager so that multiple redraws don't happen in the same loop
+        # kind of janky
+        if self._redrawing:
+            draw = False
+        else:
+            self._redrawing = True
+            draw = True
+
+        try:
+            yield
+        finally:
+            if draw:
+                self.on_redraw(*args, **kwargs)
+                self._redrawing = False
 
     def _update_scroll_bar(self):
         """Set the scrollbar parameters
@@ -469,11 +488,11 @@ class AudioView(widgets.QWidget):
         self.source_view_registry[source_idx].play_audio()
 
     def on_show_ampenv(self):
-        if self.showAmpenvToggle.isChecked():
-            self.view_state.set("show_ampenv", True)
-        else:
-            self.view_state.clear("show_ampenv")
-        self.on_redraw()
+        with self.redraw_context():
+            if self.showAmpenvToggle.isChecked():
+                self.view_state.set("show_ampenv", True)
+            else:
+                self.view_state.clear("show_ampenv")
 
     def on_auto_search(self):
         if self.autoSearchToggle.isChecked():
@@ -483,7 +502,8 @@ class AudioView(widgets.QWidget):
 
     def on_lowres_timer(self):
         """Draw the spectrogram in full hi resolution"""
-        self.on_redraw(lowres_timeout=0)
+        with self.redraw_context(lowres_timeout=0):
+            pass
 
     def on_zoom(self, direction, pos=None):
         """Adjust the window size and reposition window.
@@ -548,10 +568,11 @@ class AudioView(widgets.QWidget):
         """Generic way update the range and emit the rangeChanged event
         when you might not have actually changed the scroll state.
         """
-        if page != self.scrollbar.value():
-            self.scrollbar.setValue(page)
-        else:
-            self.on_scrollbar_value_change(page)
+        with self.redraw_context():
+            if page != self.scrollbar.value():
+                self.scrollbar.setValue(page)
+            else:
+                self.on_scrollbar_value_change(page)
 
     def on_scrollbar_value_change(self, new_value):
         t1, t2 = self.timescroll_manager.page2time(new_value)
@@ -559,10 +580,11 @@ class AudioView(widgets.QWidget):
         self.events.rangeChanged.emit()
 
     def on_data_loaded(self):
-        self.timescroll_manager.set_max_time(self.state.get("sound_object").t_max)
-        self._update_scroll_bar()
-        self.on_scrollbar_value_change(0)
-        self.on_sources_changed()
+        with self.redraw_context():
+            self.timescroll_manager.set_max_time(self.state.get("sound_object").t_max)
+            self._update_scroll_bar()
+            self.on_scrollbar_value_change(0)
+            self.on_sources_changed()
 
     def on_set_position(self, t, align=None):
         if align:
@@ -573,24 +595,23 @@ class AudioView(widgets.QWidget):
         self.set_page(new_page)
 
     def on_sources_changed(self):
-        for i in reversed(range(self.currentSourcesLayout.count())):
-            item = self.currentSourcesLayout.itemAt(i)
-            if item.widget():
-                item.widget().deleteLater()
+        with self.redraw_context():
+            for i in reversed(range(self.currentSourcesLayout.count())):
+                item = self.currentSourcesLayout.itemAt(i)
+                if item.widget():
+                    item.widget().deleteLater()
 
-        self.source_view_registry = []
-        for i, source in enumerate(self.state.get("sources")):
-            source_view = SourceView(source_idx=i, events=self.events)
-            self.currentSourcesLayout.addWidget(source_view)
-            self.source_view_registry.append(source_view)
-            source_view.setVisible(not source["hidden"])
-
-        self.on_redraw()
+            self.source_view_registry = []
+            for i, source in enumerate(self.state.get("sources")):
+                source_view = SourceView(source_idx=i, events=self.events)
+                self.currentSourcesLayout.addWidget(source_view)
+                self.source_view_registry.append(source_view)
+                source_view.setVisible(not source["hidden"])
 
     def on_range_changed(self):
-        self.stop_audio_playback()
-        self._update_time_label()
-        self.on_redraw()
+        with self.redraw_context():
+            self.stop_audio_playback()
+            self._update_time_label()
 
     def on_redraw(self, lowres_timeout=500):
         """Computes spectrogram values for the current viewable window
@@ -886,6 +907,19 @@ class SourceView(widgets.QWidget):
         best_choice = np.searchsorted(choices, first_guess)
         return choices[best_choice]
 
+    def _seconds_to_human_readable(self, seconds):
+        """Converts raw time in seconds to human readable format (1h2m 3.3s)"""
+        result = ""
+        hours = int(seconds / (60 * 60))
+        minutes = int((seconds - hours * (60 * 60)) / 60)
+        seconds = seconds - (minutes * 60) - (hours * 60 * 60)
+        if hours:
+            result += "{:d}:".format(hours)
+        if minutes:
+            result += "{:d}:".format(minutes)
+        result += "{:.1f}".format(seconds)
+        return result
+
     def _draw_xaxis(self):
         ax_spec = self.spectrogram_plot.getAxis("bottom")
 
@@ -898,7 +932,7 @@ class SourceView(widgets.QWidget):
         for t in np.arange(-offset, win_size - offset, spacing):
             # Choose ticks at the nearest multiples of spacing
             samples = int(np.round(t * read_default.SPEC_SAMPLE_RATE))
-            ticks.append([samples, np.around(base_t + t, 2)])
+            ticks.append([samples, self._seconds_to_human_readable(np.around(base_t + t, 2))])
 
         ax_spec.setTicks([ticks])
 
@@ -1072,12 +1106,14 @@ class SourceView(widgets.QWidget):
                     end.y() * self._current_ampenv_yscale
                 )
             )
+
+        spec_range = sorted(np.array([
+            start.y() * self._current_spectrogram_yscale,
+            end.y() * self._current_spectrogram_yscale
+        ]))
         self.view_state.set(
             "selected_spec_range",
-            (
-                start.y() * self._current_spectrogram_yscale,
-                end.y() * self._current_spectrogram_yscale
-            )
+            tuple(spec_range)
         )
         self.view_state.set(
             "source_focus",
