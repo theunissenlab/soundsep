@@ -1101,12 +1101,14 @@ class SourceView(widgets.QWidget):
                     end.y() * self._current_ampenv_yscale
                 )
             )
+
+        spec_range = sorted(np.array([
+            start.y() * self._current_spectrogram_yscale,
+            end.y() * self._current_spectrogram_yscale
+        ]))
         self.view_state.set(
             "selected_spec_range",
-            (
-                start.y() * self._current_spectrogram_yscale,
-                end.y() * self._current_spectrogram_yscale
-            )
+            tuple(spec_range)
         )
         self.view_state.set(
             "source_focus",
