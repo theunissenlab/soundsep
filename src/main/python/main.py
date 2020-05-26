@@ -257,6 +257,7 @@ class App(widgets.QMainWindow):
 
         self.state.reset()
 
+        self.state.set("sources", [])
         if os.path.exists(self.save_file):
             loaded_data = np.load(self.save_file, allow_pickle=True)[()]
             if "sources" in loaded_data:
