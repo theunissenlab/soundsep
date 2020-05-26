@@ -1,5 +1,6 @@
-from functools import partial
 import uuid
+from contextlib import contextmanager
+from functools import partial
 
 import pandas as pd
 import pyqtgraph as pg
@@ -328,6 +329,7 @@ class AudioView(widgets.QWidget):
         self.view_state = ViewState()
         self.settings = QSettings("Theuniseen Lab", "Sound Separation")
         self.timescroll_manager = TimeScrollManager(None)
+        self._redrawing = False
 
         self.init_ui()
 
@@ -397,6 +399,23 @@ class AudioView(widgets.QWidget):
         self.mainLayout.addLayout(self.windowInfoLayout)
 
         self.setLayout(self.mainLayout)
+
+    @contextmanager
+    def redraw_context(self, *args, **kwargs):
+        # Context manager so that multiple redraws don't happen in the same loop
+        # kind of janky
+        if self._redrawing:
+            draw = False
+        else:
+            self._redrawing = True
+            draw = True
+
+        try:
+            yield
+        finally:
+            if draw:
+                self.on_redraw(*args, **kwargs)
+                self._redrawing = False
 
     def _update_scroll_bar(self):
         """Set the scrollbar parameters
@@ -469,11 +488,11 @@ class AudioView(widgets.QWidget):
         self.source_view_registry[source_idx].play_audio()
 
     def on_show_ampenv(self):
-        if self.showAmpenvToggle.isChecked():
-            self.view_state.set("show_ampenv", True)
-        else:
-            self.view_state.clear("show_ampenv")
-        self.on_redraw()
+        with self.redraw_context():
+            if self.showAmpenvToggle.isChecked():
+                self.view_state.set("show_ampenv", True)
+            else:
+                self.view_state.clear("show_ampenv")
 
     def on_auto_search(self):
         if self.autoSearchToggle.isChecked():
@@ -483,7 +502,8 @@ class AudioView(widgets.QWidget):
 
     def on_lowres_timer(self):
         """Draw the spectrogram in full hi resolution"""
-        self.on_redraw(lowres_timeout=0)
+        with self.redraw_context(lowres_timeout=0):
+            pass
 
     def on_zoom(self, direction, pos=None):
         """Adjust the window size and reposition window.
@@ -544,10 +564,11 @@ class AudioView(widgets.QWidget):
         """Generic way update the range and emit the rangeChanged event
         when you might not have actually changed the scroll state.
         """
-        if page != self.scrollbar.value():
-            self.scrollbar.setValue(page)
-        else:
-            self.on_scrollbar_value_change(page)
+        with self.redraw_context():
+            if page != self.scrollbar.value():
+                self.scrollbar.setValue(page)
+            else:
+                self.on_scrollbar_value_change(page)
 
     def on_scrollbar_value_change(self, new_value):
         t1, t2 = self.timescroll_manager.page2time(new_value)
@@ -555,10 +576,11 @@ class AudioView(widgets.QWidget):
         self.events.rangeChanged.emit()
 
     def on_data_loaded(self):
-        self.timescroll_manager.set_max_time(self.state.get("sound_object").t_max)
-        self._update_scroll_bar()
-        self.on_scrollbar_value_change(0)
-        self.on_sources_changed()
+        with self.redraw_context():
+            self.timescroll_manager.set_max_time(self.state.get("sound_object").t_max)
+            self._update_scroll_bar()
+            self.on_scrollbar_value_change(0)
+            self.on_sources_changed()
 
     def on_set_position(self, t, align=None):
         if align:
@@ -581,12 +603,10 @@ class AudioView(widgets.QWidget):
             self.source_view_registry.append(source_view)
             source_view.setVisible(not source["hidden"])
 
-        self.on_redraw()
-
     def on_range_changed(self):
-        self.stop_audio_playback()
-        self._update_time_label()
-        self.on_redraw()
+        with self.redraw_context():
+            self.stop_audio_playback()
+            self._update_time_label()
 
     def on_redraw(self, lowres_timeout=500):
         """Computes spectrogram values for the current viewable window
