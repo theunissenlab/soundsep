@@ -108,13 +108,10 @@ Note: If you are having a hard time getting intervals to be detected, try these:
 * Using `Shift+W` and `Shift+S` to manually increase and decrease the amp env threshold
 
 ### Keyboard Shortcuts
-The keyboard shortcuts in this are designed to have your left hand on the keyboard:
-```
-Q W E
- A S D
-  Z X            M
-```
-and your right hand on the mouse.
+
+![Keyboard Shortcuts](documentation/diagrams/keyboard_shortcuts.png)
+
+The keyboard shortcuts in this are designed to have your left hand on the keyboard and your right hand on the mouse.
 
 `A` and `D`: Move earlier and later in time
 
