@@ -591,17 +591,18 @@ class AudioView(widgets.QWidget):
         self.set_page(new_page)
 
     def on_sources_changed(self):
-        for i in reversed(range(self.currentSourcesLayout.count())):
-            item = self.currentSourcesLayout.itemAt(i)
-            if item.widget():
-                item.widget().deleteLater()
+        with self.redraw_context():
+            for i in reversed(range(self.currentSourcesLayout.count())):
+                item = self.currentSourcesLayout.itemAt(i)
+                if item.widget():
+                    item.widget().deleteLater()
 
-        self.source_view_registry = []
-        for i, source in enumerate(self.state.get("sources")):
-            source_view = SourceView(source_idx=i, events=self.events)
-            self.currentSourcesLayout.addWidget(source_view)
-            self.source_view_registry.append(source_view)
-            source_view.setVisible(not source["hidden"])
+            self.source_view_registry = []
+            for i, source in enumerate(self.state.get("sources")):
+                source_view = SourceView(source_idx=i, events=self.events)
+                self.currentSourcesLayout.addWidget(source_view)
+                self.source_view_registry.append(source_view)
+                source_view.setVisible(not source["hidden"])
 
     def on_range_changed(self):
         with self.redraw_context():
