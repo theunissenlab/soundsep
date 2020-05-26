@@ -27,10 +27,17 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 2. `fbs run`
 
-
 ### Loading a file
 
 This app loads data from wav files. They should be organized into a single folder with the names "ch0.wav", "ch1.wav", etc. To load a file, go to `File > Open Directory`. Select the folder that contains the wav files and then click open (make sure you aren't accidentally selecting a subfolder).
+
+#### Web loading
+
+Testing out the feasibility of loading audio through web requests to a server run from the songephys project. In the songephys repo, run `python code/api/runserver.py` to start serving web requests.
+
+Then in Soundsep, go to `File > Load URL` and enter in the full url to the session of interest:
+
+`https://<hostname>:<port>/sessions/<session_name>`
 
 ### Setting up vocal sources
 

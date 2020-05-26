@@ -17,13 +17,15 @@ from fbs_runtime.application_context.PyQt5 import ApplicationContext
 from interfaces.audio import (
     LazyMultiWavInterface,
     LazySignalInterface,
-    LazyWavInterface
+    LazyWavInterface,
+    SongephysWebInterface
 )
 
 from app.state import AppState, ViewState
 from app.views import MainView
 from app.settings import fonts, read_default
 from app.style import qss
+from app.web import WebLoader
 
 
 class Events(widgets.QWidget):
@@ -83,6 +85,9 @@ class App(widgets.QMainWindow):
         self.open_directory_action = widgets.QAction("Open Directory", self)
         self.open_directory_action.triggered.connect(self.run_directory_loader)
 
+        self.load_url_action = widgets.QAction("Load URL", self)
+        self.load_url_action.triggered.connect(self.run_web_loader)
+
         self.open_recent_actions = []
         for i in range(read_default.MAX_RECENT_FILES):
             action = widgets.QAction("", self)
@@ -131,6 +136,7 @@ class App(widgets.QMainWindow):
 
         fileMenu = mainMenu.addMenu("&File")
         fileMenu.addAction(self.open_directory_action)
+        fileMenu.addAction(self.load_url_action)
         self.openRecentMenu = fileMenu.addMenu("&Open Recent")
         for i in range(read_default.MAX_RECENT_FILES):
             self.openRecentMenu.addAction(self.open_recent_actions[i])
@@ -199,6 +205,62 @@ class App(widgets.QMainWindow):
         if selected_file:
             self.load_dir(selected_file)
 
+    def run_web_loader(self):
+        self.dialog = WebLoader(self)
+        self.dialog.selectEvent.connect(self._load_web)
+        self.dialog.show()
+
+    def _load_web(self, name, url):
+        options = widgets.QFileDialog.Options()
+        save_to = widgets.QFileDialog.getExistingDirectory(
+            self,
+            "Choose save directory",
+            name,
+            options=options
+        )
+        if not save_to:
+            widgets.QMessageBox.warning(
+                self,
+                "Warning",
+                "Save directory was not selected.",
+            )
+            return
+
+        if os.path.basename(save_to) == name:
+            save_dir = save_to
+        else:
+            save_dir = os.path.join(save_to, name)
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+
+        widgets.QMessageBox.information(
+            self,
+            "Save directory assigned",
+            "{} will be used to save data from\n"
+            "{}".format(save_dir, url),
+        )
+
+        data_directory = os.path.join(save_dir, "outputs")
+        if not os.path.exists(data_directory):
+            os.makedirs(data_directory)
+
+        self.save_file = os.path.join(data_directory, "save.npy")
+
+        self.state.reset()
+
+        if os.path.exists(self.save_file):
+            loaded_data = np.load(self.save_file, allow_pickle=True)[()]
+            if "sources" in loaded_data:
+                self.state.set("sources", loaded_data["sources"])
+
+        self.dialog.close()
+
+        sound_object = SongephysWebInterface(url)
+        self.state.set("sound_object", sound_object)
+        self.state.set("sound_file", url)
+        self.state.set("web_mode", True)
+        self.events.dataLoaded.emit()
+
     def load_dir(self, dir):
         if not os.path.isdir(dir):
             raise IOError("{} is not a directory".format(dir))
@@ -240,7 +302,7 @@ class App(widgets.QMainWindow):
         elif os.path.exists(lazy_file):
             sound_object = LazySignalInterface(lazy_file)
         elif len(wav_files) > 1:
-            sound_object = LazyMultiWavInterface.create_from_directory(dir)
+            sound_object = LazyMultiWavInterface.create_from_directory(dir, force_equal_length=True)
         elif len(wav_files) == 1:
             sound_object = LazyWavInterface(wav_files[0])
 
@@ -255,6 +317,9 @@ class App(widgets.QMainWindow):
 
         self.state.set("sound_object", sound_object)
         self.state.set("sound_file", dir)
+        if self.state.has("web_mode"):
+            self.state.clear("web_mode")
+
         self.events.dataLoaded.emit()
 
     def open_recent(self, i):

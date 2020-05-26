@@ -26,6 +26,8 @@ class _defaults:
 
     GITHUB_LINK = "https://github.com/kevinyu/soundsep"
 
+    SERVER_URL = ""
+
 
 class _SettingsReader:
     """Just a helper to make reading settings or default easier to write"""
