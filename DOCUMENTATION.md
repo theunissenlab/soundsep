@@ -83,10 +83,15 @@ On Mac, there are some issues more issues that make things more complicated. Thi
 fbs freeze  # creates app at targets/Soundsep.app but won't run
 cd target/Soundsep.app/Contents/MacOS
 mkdir tcl tk
+mkdir _sounddevice_data
+mkdir _sounddevice_data/portaudio-binaries
+
 cp -R /Library/Frameworks/Python.framework/Versions/3.7/lib/tcl* tcl/
 cp -R /Library/Frameworks/Python.framework/Versions/3.7/lib/tk* tk/
 cp -R /Library/Frameworks/Python.framework/Versions/3.7/lib/Tk* tk/
-cp env/lib/python3.7/site-packages/_sounddevice_data/portaudio-binaries/libportaudio.dylib  target/Soundsep.app/Contents/MacOS/_sounddevice_data/portaudio-binaries/
+cp ../../../../env/lib/python3.7/site-packages/_sounddevice_data/portaudio-binaries/libportaudio.dylib  _sounddevice_data/portaudio-binaries/
+
+cd ../../../..
 fbs installer
 ```
 
