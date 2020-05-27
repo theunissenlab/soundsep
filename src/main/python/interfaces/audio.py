@@ -16,7 +16,7 @@ class AudioSliceInterface(object):
             raise ValueError("t_start ({:.2f}) cannot be < 0".format(t_start))
         if t_stop > len(self) / self.sampling_rate:
             raise ValueError("t_stop ({:.2f}) cannot be > {:.2f} "
-                "(the length of the file)".format(t_stop, int(len(self) / self.sampling_rate)))
+                "(the length of the file)".format(t_stop, len(self) / self.sampling_rate))
         data = self._time_slice(t_start, t_stop)
         t_arr = np.arange(len(data)) / self.sampling_rate
         return t_arr, data
@@ -136,7 +136,7 @@ class LazyMultiWavInterface(LazyWavInterface):
         self.n_channels = len(filenames)
 
         _channel_durations = []
-        for file_idx, filename in enumerate(filenames):
+        for filename in filenames:
             with soundfile.SoundFile(filename) as f:
                 if self.sampling_rate is None:
                     self.sampling_rate = f.samplerate
@@ -197,6 +197,180 @@ class LazyMultiWavInterface(LazyWavInterface):
             data[:, ch] = ch_data[:, 0]
 
         return data
+
+
+class ConcatenatedWavInterface(LazyWavInterface):
+    """
+    Sound analysis pro records in chunks with each file timestamped.
+    Works for only one subject at a time.
+
+    This interface should read these chunks seamlessly (linking them to
+    one another). The data should be organized in the filesystem like this:
+
+    containing_folder/
+        Subject1_190430_51241336.wav
+        Subject1_190430_51244402.wav
+        ...
+    """
+    def __init__(self, filenames, parse_timestamp=None, dtype=np.float64):
+        self._dtype = dtype
+        self._filenames = sorted(filenames, key=parse_timestamp)
+        self.sampling_rate = None
+        self._frames = 0        # Total number of frames across all files
+        self.n_channels = None
+        self._file_frames = []  # Number of frames in each file
+
+        for filename in self._filenames:
+            with soundfile.SoundFile(filename) as f:
+                if self.sampling_rate is None:
+                    self.sampling_rate = f.samplerate
+                if self.n_channels is None:
+                    self.n_channels = f.channels
+
+                self._file_frames.append(f.frames)
+                self._frames += f.frames
+
+                if self.sampling_rate != f.samplerate:
+                    raise Exception("All .wav files must have the same sample rate\n"
+                        "{}: {} but {}: {}".format(
+                            filenames[0],
+                            self.sampling_rate,
+                            filename,
+                            f.samplerate
+                        )
+                    )
+                if self.n_channels != f.channels:
+                    raise Exception("All .wav files must have the same number of channels\n"
+                        "{}: {} but {}: {}".format(
+                            filenames[0],
+                            self.n_channels,
+                            filename,
+                            f.channels
+                        )
+                    )
+
+        self._file_offsets = np.cumsum(self._file_frames)  # Cumulative frames
+
+    def _time_slice(self, t_start, t_stop, correction=0):
+        offset = int(np.round(t_start * self.sampling_rate)) + correction
+        duration = int(np.round((t_stop - t_start) * self.sampling_rate))
+
+        data = np.zeros((duration, self.n_channels))
+
+        start_file_idx = np.searchsorted(self._file_offsets, offset, side="right")
+
+        frames_read = 0
+        for file_idx in range(start_file_idx, len(self._filenames)):
+            file_offset = self._file_offsets[file_idx - 1] if file_idx > 0 else 0
+
+            read_start = offset + frames_read - file_offset
+            read_stop = min(read_start + duration - frames_read, self._file_frames[file_idx])
+
+            ch_data, _ = soundfile.read(
+                self._filenames[file_idx],
+                read_stop - read_start,
+                read_start,
+                dtype=self._dtype
+            )
+
+            if ch_data.ndim == 1:
+                ch_data = ch_data[:, None]
+
+            data[frames_read:frames_read + ch_data.shape[0]] = ch_data
+            frames_read += ch_data.shape[0]
+            if frames_read == duration:
+                break
+
+        return data
+
+
+class ConcatenatedMultiChannelInterface(LazyWavInterface):
+    """Concatenate data across channels and time
+
+    Data should be organized like this:
+    containing_folder/
+        ch0/
+            Subject1_190430_51241336.wav
+            Subject1_190430_51244402.wav
+            ...
+        ch1/
+            Subject2_190430_51241336.wav
+            Subject2_190430_51244402.wav
+            ...
+
+    And read like
+    ConcatenatedMultiChannelInterface.create_from_directory(
+        "containing_folder"
+    )
+    """
+
+    @classmethod
+    def create_from_directory(cls, from_directory, force_equal_length=False):
+        """Convenience function to create a LazyMultiWavInterface from a
+        directory containing wav files named ch0.wav, ch1.wav, ch2.wav, etc.
+        """
+        if not os.path.isdir(from_directory):
+            raise ValueError("from_directory must be an existing directory")
+        regexp = r"([0-9]+)"
+        filenames = glob.glob(os.path.join(from_directory, "ch[0-9]"))
+        if not len(filenames):
+            raise ValueError("No folders matching ch[0-9] were found "
+                    "at {}".format(from_directory))
+        filenames = sorted(filenames, key=lambda x: int(re.search(regexp, x).groups()[0]))
+
+        return cls(filenames, force_equal_length=force_equal_length)
+
+    def __init__(self, foldernames, parse_timestamp=None, force_equal_length=False, dtype=np.float64):
+        self._dtype = dtype
+        self._foldernames = foldernames
+        self.sampling_rate = None
+        self._frames = None        # Total number of frames across all files
+        self.n_channels = len(foldernames)
+
+        self._loaders = []
+
+        _channel_durations = []
+
+        for folder in self._foldernames:
+            files = glob.glob(os.path.join(folder, "*.wav"))
+            loader = ConcatenatedWavInterface(files, parse_timestamp=parse_timestamp, dtype=dtype)
+            if loader.n_channels > 1:
+                raise Exception("Wav files loaded by ConcatenatedMultiChannelInterface must have one channel each")
+            self._loaders.append(loader)
+
+            if self.sampling_rate is None:
+                self.sampling_rate = loader.sampling_rate
+
+            if self._frames is None:
+                self._frames = loader._frames
+
+            _channel_durations.append(loader._frames)
+
+            if not force_equal_length and self._frames != loader._frames:
+                raise Exception("All folders must have the total wav length\n"
+                    "if force_equal_length is not set to True \n"
+                    "{}: {} but {}: {}".format(
+                        self._foldernames[0],
+                        self._frames,
+                        folder,
+                        loader._frames
+                    )
+                )
+
+        if force_equal_length:
+            min_frames = np.min(_channel_durations)
+            self._offsets = [frames - min_frames for frames in _channel_durations]
+            self._frames = min_frames
+        else:
+            self._offsets = [0 for _ in _channel_durations]
+
+    def _time_slice(self, t_start, t_stop):
+        results = []
+        for i, loader in enumerate(self._loaders):
+            data = loader._time_slice(t_start, t_stop, correction=self._offsets[i])
+            results.append(data)
+
+        return np.hstack(results)
 
 
 class SongephysWebInterface(AudioSliceInterface):
