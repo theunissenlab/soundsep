@@ -17,7 +17,8 @@ from fbs_runtime.application_context.PyQt5 import ApplicationContext
 from interfaces.audio import (
     LazyMultiWavInterface,
     LazySignalInterface,
-    LazyWavInterface
+    LazyWavInterface,
+    ConcatenatedMultiChannelInterface,
 )
 
 from app.state import AppState, ViewState
@@ -234,12 +235,14 @@ class App(widgets.QMainWindow):
     def _load_dir(self, dir):
         data_directory = os.path.join(dir, "outputs")
         wav_files = glob.glob(os.path.join(dir, "ch[0-9]*.wav"))
+        wav_dir_files = glob.glob(os.path.join(dir, "ch[0-9]", "*.wav"))
+
         lazy_file = os.path.join(dir, "lazy.npy")
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
 
         self.save_file = os.path.join(data_directory, "save.npy")
-        if not len(wav_files) and not os.path.exists(lazy_file):
+        if not len(wav_files) and not os.path.exists(lazy_file) and not wav_dir_files:
             widgets.QMessageBox.warning(
                 self,
                 "Error",
@@ -247,12 +250,17 @@ class App(widgets.QMainWindow):
             )
             return
 
-        if len(wav_files) > 1:
+        elif not len(wav_files) and len(wav_dir_files):
+            sound_object = ConcatenatedMultiChannelInterface.create_from_directory(
+                dir,
+                force_equal_length=True
+            )
+        elif os.path.exists(lazy_file):
+            sound_object = LazySignalInterface(lazy_file)
+        elif len(wav_files) > 1:
             sound_object = LazyMultiWavInterface.create_from_directory(dir, force_equal_length=True)
         elif len(wav_files) == 1:
             sound_object = LazyWavInterface(wav_files[0])
-        elif os.path.exists(lazy_file):
-            sound_object = LazySignalInterface(lazy_file)
 
         self.state.set("sources", [])
 
