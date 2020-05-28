@@ -249,20 +249,25 @@ class ConcatenatedWavInterface(LazyWavInterface):
 
         self._file_offsets = np.cumsum(self._file_frames)  # Cumulative frames
 
-    def _time_slice(self, t_start, t_stop, correction=0):
-        offset = int(np.round(t_start * self.sampling_rate)) + correction
+    def _time_slice(self, t_start, t_stop, corrected_frames=None):
+        offset = int(np.round(t_start * self.sampling_rate))
         duration = int(np.round((t_stop - t_start) * self.sampling_rate))
 
         data = np.zeros((duration, self.n_channels))
 
-        start_file_idx = np.searchsorted(self._file_offsets, offset, side="right")
+        if corrected_frames is not None:
+            file_offsets = np.cumsum(corrected_frames)
+        else:
+            file_offsets = self._file_offsets
+
+        start_file_idx = np.searchsorted(file_offsets, offset, side="right")
 
         frames_read = 0
         for file_idx in range(start_file_idx, len(self._filenames)):
-            file_offset = self._file_offsets[file_idx - 1] if file_idx > 0 else 0
+            file_offset = file_offsets[file_idx - 1] if file_idx > 0 else 0
 
             read_start = offset + frames_read - file_offset
-            read_stop = min(read_start + duration - frames_read, self._file_frames[file_idx])
+            read_stop = min(read_start + duration - frames_read, corrected_frames[file_idx])
 
             ch_data, _ = soundfile.read(
                 self._filenames[file_idx],
@@ -303,7 +308,7 @@ class ConcatenatedMultiChannelInterface(LazyWavInterface):
     """
 
     @classmethod
-    def create_from_directory(cls, from_directory, force_equal_length=False):
+    def create_from_directory(cls, from_directory):
         """Convenience function to create a LazyMultiWavInterface from a
         directory containing wav files named ch0.wav, ch1.wav, ch2.wav, etc.
         """
@@ -316,9 +321,9 @@ class ConcatenatedMultiChannelInterface(LazyWavInterface):
                     "at {}".format(from_directory))
         filenames = sorted(filenames, key=lambda x: int(re.search(regexp, x).groups()[0]))
 
-        return cls(filenames, force_equal_length=force_equal_length)
+        return cls(filenames)
 
-    def __init__(self, foldernames, parse_timestamp=None, force_equal_length=False, dtype=np.float64):
+    def __init__(self, foldernames, parse_timestamp=None, dtype=np.float64):
         self._dtype = dtype
         self._foldernames = foldernames
         self.sampling_rate = None
@@ -344,28 +349,28 @@ class ConcatenatedMultiChannelInterface(LazyWavInterface):
 
             _channel_durations.append(loader._frames)
 
-            if not force_equal_length and self._frames != loader._frames:
-                raise Exception("All folders must have the total wav length\n"
-                    "if force_equal_length is not set to True \n"
-                    "{}: {} but {}: {}".format(
-                        self._foldernames[0],
-                        self._frames,
-                        folder,
-                        loader._frames
-                    )
-                )
+        # if the loaders don't all have the same lenth of files
+        if len(set([len(loader._file_frames) for loader in self._loaders])) > 1:
+            raise Exception("All loaders in ConcatenatedMultiChannelInterface "
+                "must have same number of contained files")
 
-        if force_equal_length:
-            min_frames = np.min(_channel_durations)
-            self._offsets = [frames - min_frames for frames in _channel_durations]
-            self._frames = min_frames
-        else:
-            self._offsets = [0 for _ in _channel_durations]
+        self._offsets = []
+        for file_idx in np.arange(len(self._loaders[0]._file_frames)):
+            file_lengths = [
+                loader._file_frames[file_idx]
+                for loader in self._loaders
+            ]
+            min_frames = np.min(file_lengths)
+            self._offsets.append(min_frames)
 
     def _time_slice(self, t_start, t_stop):
         results = []
         for i, loader in enumerate(self._loaders):
-            data = loader._time_slice(t_start, t_stop, correction=self._offsets[i])
+            data = loader._time_slice(
+                t_start,
+                t_stop,
+                corrected_frames=self._offsets
+            )
             results.append(data)
 
         return np.hstack(results)

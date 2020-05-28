@@ -912,8 +912,15 @@ class SourceView(widgets.QWidget):
         if hours:
             result += "{:d}:".format(hours)
         if minutes:
-            result += "{:d}:".format(minutes)
-        result += "{:.1f}".format(seconds)
+            if hours:
+                result += "{:d}:".format(minutes).zfill(2)
+            else:
+                result += "{:d}:".format(minutes)
+
+        if minutes:
+            result += "{:.1f}".format(seconds).zfill(4)
+        else:
+            result += "{:.1f}".format(seconds)
         return result
 
     def _draw_xaxis(self):
