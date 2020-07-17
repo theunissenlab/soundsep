@@ -386,6 +386,24 @@ class LazySignalInterface(AudioSliceInterface):
         self._frames = int(self._lazy_object.max_time() * self.sampling_rate)
         self.n_channels = self._lazy_object._signals["mic"][0].M
 
+    def __len__(self):
+        return self._frames
+
     def _time_slice(self, t_start, t_stop):
         result = self._lazy_object.time_slice(t_start, t_stop, signal="mic")
         return result.data
+
+    def validate_paths(self):
+        """Check that the paths to lazy loaded data files exist
+        """
+        for key, signals in self._lazy_object._signals.items():
+            for signal in signals:
+                if not os.path.exists(signal.file):
+                    return False
+        return True
+
+    def set_data_path(self, data_path):
+        for key, signals in self._lazy_object._signals.items():
+            for signal in signals:
+                rest = signal.file.split("/birds/")[1]
+                signal.file = os.path.join(data_path, "birds", rest)
