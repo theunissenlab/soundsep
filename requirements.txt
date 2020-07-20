@@ -7,6 +7,7 @@ numpy==1.18.1
 pandas==0.24.2
 pyqtgraph==0.10.0
 PyQt5==5.14.1
+requests==2.23.0
 scikit-learn==0.22.1
 scipy==1.4.1
 SoundFile==0.10.3.post1
