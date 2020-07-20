@@ -274,7 +274,12 @@ class App(widgets.QMainWindow):
 
     def load_dir(self, dir):
         if not os.path.isdir(dir):
-            raise IOError("{} is not a directory".format(dir))
+            widgets.QMessageBox.warning(
+                self,
+                "Error",
+                "{} is not a directory".format(dir),
+            )
+            return
 
         # Update the open recent menu item
         open_recent = self.settings.value("OPEN_RECENT", [])
@@ -349,6 +354,9 @@ class App(widgets.QMainWindow):
             loaded_data = np.load(self.save_file, allow_pickle=True)[()]
             if "sources" in loaded_data:
                 self.state.set("sources", loaded_data["sources"])
+
+            if "autodetect" in loaded_data:
+                self.state.set("autodetected_periods", loaded_data["autodetect"])
             # if "_VIEW_STATE" in loaded_data:
             #     self.view_state.update(loaded_data["_VIEW_STATE"])
 
