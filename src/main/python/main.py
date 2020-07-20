@@ -267,15 +267,16 @@ class App(widgets.QMainWindow):
                 # Ask the user to point to the remote drive "bird" directory
                 widgets.QMessageBox.about(
                     self,
-                    "Data directory not found ",
-                    "Path to audio data was not found. If using a remote mounted drive. "
-                    "select the data directory containing the folder \"birds\""
+                    "Data directory not found",
+                    "Path to audio data was not found for {}. If using a remote mounted drive. "
+                    "select the data directory containing the folder \"birds\"".format(lazy_file)
                 )
                 options = widgets.QFileDialog.Options()
+                suggested = lazy_file.split("bird")[0]
                 data_path = widgets.QFileDialog.getExistingDirectory(
                     self,
                     "Choose the data directory containing the folder \"birds\"",
-                    "/",
+                    suggested,
                     options=options
                 )
                 if not data_path:
