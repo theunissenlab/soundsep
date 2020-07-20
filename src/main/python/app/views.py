@@ -5,6 +5,7 @@ from functools import partial
 import pandas as pd
 import pyqtgraph as pg
 import numpy as np
+from scipy.signal import savgol_filter
 import sounddevice as sd
 from PyQt5.QtCore import (Qt, QObject, QProcess, QSettings, QThread, QTimer,
         pyqtSignal, pyqtSlot)
@@ -365,6 +366,8 @@ class AudioView(widgets.QWidget):
 
         self.showAmpenvToggle = widgets.QPushButton("Show Ampenv")
         self.showAmpenvToggle.setCheckable(True)
+        self.selectByThresholdToggle = widgets.QPushButton("Select by Threshold")
+        self.selectByThresholdToggle.setCheckable(True)
         self.autoSearchToggle = widgets.QPushButton("Auto Search on Drag")
         self.autoSearchToggle.setCheckable(True)
 
@@ -372,13 +375,27 @@ class AudioView(widgets.QWidget):
             self.autoSearchToggle.toggle()
 
         self.topBarLayout.addWidget(self.showAmpenvToggle)
+        self.topBarLayout.addWidget(self.selectByThresholdToggle)
         self.topBarLayout.addWidget(self.autoSearchToggle)
 
         self.topBarLayout.addStretch()
         self.showAmpenvToggle.clicked.connect(self.on_show_ampenv)
+        self.selectByThresholdToggle.clicked.connect(self.on_toggle_threshold)
         self.autoSearchToggle.clicked.connect(self.on_auto_search)
 
+        self.ampenvScaleSlider = widgets.QSlider()
+        self.ampenvScaleSlider.setTickPosition(widgets.QSlider.TicksBothSides)
+        self.ampenvScaleSlider.setMinimum(1)
+        self.ampenvScaleSlider.setMaximum(20)
+        self.ampenvScaleSlider.setValue(11)
+        self.ampenvScaleSlider.setSingleStep(1)
+        self.ampenvScaleSlider.valueChanged.connect(self.on_ampenv_scale_changed)
+
         self.currentSourcesLayout = widgets.QVBoxLayout()
+
+        self.currentSourcesPanel = widgets.QHBoxLayout()
+        self.currentSourcesPanel.addLayout(self.currentSourcesLayout)
+        self.currentSourcesPanel.addWidget(self.ampenvScaleSlider)
 
         self.scrollbar = widgets.QScrollBar(Qt.Horizontal, self)
         self.scrollbar.setValue(0)
@@ -393,7 +410,7 @@ class AudioView(widgets.QWidget):
         self.windowInfoLayout.addStretch()
 
         self.mainLayout.addLayout(self.topBarLayout)
-        self.mainLayout.addLayout(self.currentSourcesLayout)
+        self.mainLayout.addLayout(self.currentSourcesPanel)
         self.mainLayout.addStretch()
         self.mainLayout.addWidget(self.scrollbar)
         self.mainLayout.addLayout(self.windowInfoLayout)
@@ -494,6 +511,12 @@ class AudioView(widgets.QWidget):
             else:
                 self.view_state.clear("show_ampenv")
 
+    def on_toggle_threshold(self):
+        if self.selectByThresholdToggle.isChecked():
+            self.view_state.set("select_by_threshold", True)
+        else:
+            self.view_state.clear("select_by_threshold")
+
     def on_auto_search(self):
         if self.autoSearchToggle.isChecked():
             self.state.set("autosearch", True)
@@ -569,6 +592,10 @@ class AudioView(widgets.QWidget):
                 self.scrollbar.setValue(page)
             else:
                 self.on_scrollbar_value_change(page)
+
+    def on_ampenv_scale_changed(self, new_value):
+        with self.redraw_context():
+            self.view_state.set("scale_ampenv", (21 - new_value) / 10)
 
     def on_scrollbar_value_change(self, new_value):
         t1, t2 = self.timescroll_manager.page2time(new_value)
@@ -717,10 +744,16 @@ class AudioView(widgets.QWidget):
                 max_values = []
                 for k, v in spec_results.items():
                     max_values.append(np.max(np.sum(v[2], axis=0)))
+
+                if self.view_state.has("scale_ampenv"):
+                    scale_factor = self.view_state.get("scale_ampenv")
+                else:
+                    scale_factor = 1
+
                 source_view.draw_spectrogram(
                     *spec_results[source_view.source["channel"]],
                     show_ampenv=True,
-                    ampenv_norm=np.max(max_values) * 1.1
+                    ampenv_norm=np.max(max_values) * 1.1 * scale_factor
                 )
             else:
                 source_view.draw_spectrogram(
@@ -976,11 +1009,12 @@ class SourceView(widgets.QWidget):
         min_b = logspec.max() - 40
         logspec[logspec < min_b] = min_b
         self.image.setImage(logspec.T)
-
         self._current_spectrogram_yscale = read_default.SPEC_FREQ_SPACING
         # instead of computing a separate ampenv, just use the spectrogram power
         if show_ampenv:
             ampenv = np.sum(spec, axis=0)
+            # Smooth the "ampenv" (which is just computed from the spectrogram)
+            ampenv = savgol_filter(ampenv, 21, 7)
             self.draw_ampenv(t_spec, ampenv, norm=ampenv_norm)
         else:
             self.ampenv_plot.setData([])
@@ -991,6 +1025,7 @@ class SourceView(widgets.QWidget):
 
         # normalize to ymax value
         ampenv = ymax * ampenv / (norm or np.max(ampenv))
+        ampenv -= np.min(ampenv)
         self._current_ampenv_yscale = (norm or np.max(ampenv)) / ymax
         self.ampenv_plot.setData(ampenv)
 
@@ -1063,7 +1098,7 @@ class SourceView(widgets.QWidget):
         self.spectrogram_plot.selected_range_line_start.setVisible(True)
         self.spectrogram_plot.selected_range_line_stop.setVisible(True)
 
-        if not self.view_state.has("show_ampenv"):
+        if not self.view_state.has("select_by_threshold"):
             self.spectrogram_plot.spec_range_line_start.setValue(start.y())
             self.spectrogram_plot.spec_range_line_stop.setValue(end.y())
             self.spectrogram_plot.spec_range_line_start.setVisible(True)
@@ -1101,7 +1136,7 @@ class SourceView(widgets.QWidget):
         start_t = base_t + start_dt
         end_t = base_t + end_dt
 
-        if self.view_state.has("show_ampenv") and self._current_ampenv_yscale:
+        if self.view_state.has("select_by_threshold") and self._current_ampenv_yscale:
             self.view_state.set(
                 "selected_threshold_line",
                 (
@@ -1176,6 +1211,9 @@ class SourceView(widgets.QWidget):
         (2) use the spectrogram range function. then fall back.
         """
         if not self.view_state.has("selected_range"):
+            return
+
+        if self.source.get("readonly"):
             return
 
         t0, t1 = self.view_state.get("selected_range")
@@ -1302,6 +1340,10 @@ class SourceView(widgets.QWidget):
         """
         if not self.view_state.has("selected_range"):
             return
+
+        if self.source.get("readonly"):
+            return
+
         if "intervals" not in self.source:
             return
 
@@ -1318,6 +1360,10 @@ class SourceView(widgets.QWidget):
     def on_merge_selection(self):
         if not self.view_state.has("selected_range"):
             return
+
+        if self.source.get("readonly"):
+            return
+
         if "intervals" not in self.source:
             return
 
@@ -1330,6 +1376,8 @@ class SourceView(widgets.QWidget):
         )
 
         if not len(df[selector]):
+            # Instead, select all and then merge
+            self.on_find_in_selection(0)
             return
 
         # Merge those selected into a single row
@@ -1417,7 +1465,8 @@ class SourceView(widgets.QWidget):
                     ymax / 20
                 )
                 rect.setPen(pg.mkPen(None))
-                rect.setBrush(pg.mkBrush("r"))
+                color = "#8fcfd1" if not self.source.get("readonly") else "#df5e88"
+                rect.setBrush(pg.mkBrush(color))
                 self.spectrogram_plot.addItem(rect)
                 self._drawn_intervals.append(rect)
 
@@ -1482,12 +1531,48 @@ class VocalPeriodsView(widgets.QScrollArea):
         Any custom detection hooks would go here
         """
         self.clear_vocal_periods()
+        self._last_spec_key = uuid.uuid4().hex
+        if self.state.has("autodetected_periods"):
+            df = self.state.get("autodetected_periods")
+
+            # Convert the detected periods (which may represent individual calls)
+            # into larger chunks (split up if there are more than 20s of silence)
+            def _chunk(df, silence=20):
+                chunks = []
+                current_chunk = {}
+                for i in range(len(df)):
+                    row = df.iloc[i]
+                    if not current_chunk:
+                        current_chunk["t_start"] = row["t_start"]
+                        current_chunk["t_stop"] = row["t_stop"]
+                    else:
+                        if row["t_start"] - current_chunk["t_stop"] > silence:
+                            chunks.append(current_chunk)
+                            current_chunk = {
+                                "t_start": row["t_start"],
+                                "t_stop": row["t_stop"]
+                                }
+                        else:
+                            current_chunk["t_stop"] = row["t_stop"]
+                return pd.DataFrame(chunks)
+
+            df = _chunk(df)
+
+            self.on_vocal_periods_complete(
+                self._last_spec_key,
+                [
+                    (df.iloc[i]["t_start"], df.iloc[i]["t_stop"])
+                    for i in range(len(df))
+                ]
+            )
+            return
+        else:
+            return
 
         # Detect on all channels with sources - merge them, then present them as options
         audio_signal = self.state.get("sound_object")
         channels = np.unique([source["channel"] for source in self.state.get("sources")])
 
-        self._last_spec_key = uuid.uuid4().hex
         self.worker = VocalPeriodsWorker(
             self._last_spec_key,
             channels,
