@@ -19,6 +19,7 @@ from interfaces.audio import (
     LazySignalInterface,
     LazyWavInterface,
     ConcatenatedMultiChannelInterface,
+    ConcatenatedWavInterface,
     SongephysWebInterface
 )
 
@@ -301,16 +302,24 @@ class App(widgets.QMainWindow):
         self._load_dir(dir)
 
     def _load_dir(self, dir):
+        # This function can load from many different directory formats
+        # 1. toplevel/ch0/*.wav, toplevel/ch1/*.wav, ...  (each wav has 1 channel, many wavs per channel)
+        # 2. toplevel/ch0.wav, toplevel/ch1.wav, ...  (each wav has 1 channel, 1 wav per channel)
+        # 3. toplevel/wavs/*.wav (each wav has multiple channels, many wavs)
+        # 4. toplevel/lazy.npy (lazy loading from songephys project)
+
         data_directory = os.path.join(dir, "outputs")
         wav_files = glob.glob(os.path.join(dir, "ch[0-9]*.wav"))
         wav_dir_files = glob.glob(os.path.join(dir, "ch[0-9]", "*.wav"))
+
+        multi_channel_wavs = glob.glob(os.path.join(dir, "wavs", "*.wav"))
 
         lazy_file = os.path.join(dir, "lazy.npy")
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
 
         self.save_file = os.path.join(data_directory, "save.npy")
-        if not len(wav_files) and not os.path.exists(lazy_file) and not wav_dir_files:
+        if not len(wav_files) and not os.path.exists(lazy_file) and not wav_dir_files and not multi_channel_wavs:
             widgets.QMessageBox.warning(
                 self,
                 "Error",
@@ -321,6 +330,10 @@ class App(widgets.QMainWindow):
             sound_object = ConcatenatedMultiChannelInterface.create_from_directory(
                 dir,
                 force_equal_length=True
+            )
+        elif not len(wav_files) and not len(wav_dir_files) and len(multi_channel_wavs):
+            sound_object = ConcatenatedWavInterface(
+                multi_channel_wavs,
             )
         elif os.path.exists(lazy_file):
             sound_object = LazySignalInterface(lazy_file)

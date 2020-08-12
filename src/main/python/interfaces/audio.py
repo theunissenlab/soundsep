@@ -269,7 +269,10 @@ class ConcatenatedWavInterface(LazyWavInterface):
             file_offset = file_offsets[file_idx - 1] if file_idx > 0 else 0
 
             read_start = offset + frames_read - file_offset
-            read_stop = min(read_start + duration - frames_read, corrected_frames[file_idx])
+            if corrected_frames is not None:
+                read_stop = min(read_start + duration - frames_read, corrected_frames[file_idx])
+            else:
+                read_stop = read_start + duration - frames_read
 
             ch_data, _ = soundfile.read(
                 self._filenames[file_idx],
