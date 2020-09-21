@@ -24,6 +24,18 @@ Create code -> src/main/python/ symlink
 ln -s src/main/python code
 ```
 
+#### On Windows
+
+Installation of hdbscan requires Microsoft Visual C++ 14.0 or greater (get Microsoft C++ Build Tools from https://visualstudio.microsoft.com/visual-cpp-build-tools/). hdbscan might not be necessary though (used for clustering) so you could comment out the line in requirements.txt intsead.
+
+From the terminal
+```
+python -m venv env
+.\env\Scripts\activate
+pip install -r requirements.txt
+mklink /D code src\main\python
+```
+
 ## Extract potential calls from a file
 
 This is a quick script that extracts calls from the first channel of a wav file. A more sophisticated extraction strategy from multichannel wav files or multiple simultaneously recorded wav files should use custom code based on this script.
