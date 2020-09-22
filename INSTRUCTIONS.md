@@ -32,7 +32,56 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 ### Loading a file
 
-This app loads data from wav files. They should be organized into a single folder with the names "ch0.wav", "ch1.wav", etc. To load a file, go to `File > Open Directory`. Select the folder that contains the wav files and then click open (make sure you aren't accidentally selecting a subfolder).
+This app reads audio files from a directory (make sure you are opening the containing directory, not a specific file). What they all have in common that you open a directory containing some organization of subdirectories, wav files, or other file formats. The code that determines how the data is read is located in `code/app/main.py`. These are the formats:
+
+#### 1. Partial wav files, 1 channel per wav file
+
+In this structure, each wav file only has one microphone channel. The recordings from each channel are separated into different directories, and each channel has the same number of wav files (marked by timestamp).
+```
+toplevel/
+    ch0/
+        [timestamp1].wav
+        [timestamp2].wav
+        ...
+    ch1/
+        [timestamp1].wav
+        [timestamp2].wav
+        ...
+    ...
+```
+
+#### 2. Complete wav files, 1 channel per wav file
+
+In this structure, each wav file only contains one channel of audio data, but each wav file actually spans the entire recording (continuous recording).
+
+```
+toplevel/
+    ch0.wav
+    ch1.wav
+    ...
+```
+
+#### 3. Partial wav files with multiple channels per wav file
+
+In this structure, there can be one or more wav files representing different time periods of audio, and each wav file contains 1+ channels of audio data.
+
+```
+toplevel/
+    [timestamp0].wav
+    [timestamp1].wav
+    ...
+```
+
+#### 4. Songephys lazy loading
+
+This format is specific to our songephys data pipeline, where audio data is written to disk as a numpy memmapped array and accessible with a pickled python object for reading the data (lazy.npy).
+
+```
+toplevel/
+    lazy.npy
+```
+
+The toplevel directory here looks something like `data/[subject]/sites/[site]/` and the memmap arrays are located in `data/[subject]/sessions/*/raw/mic.memmap`.
 
 ### Setting up vocal sources
 
