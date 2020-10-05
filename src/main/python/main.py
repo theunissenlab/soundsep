@@ -264,24 +264,28 @@ class App(widgets.QMainWindow):
             sound_object = LazySignalInterface(lazy_file)
             # The absolute path of the file when loaded remotely may not exist
             if not sound_object.validate_paths():
-                # Ask the user to point to the remote drive "bird" directory
-                widgets.QMessageBox.about(
-                    self,
-                    "Data directory not found",
-                    "Path to audio data was not found for {}. If using a remote mounted drive. "
-                    "select the data directory containing the folder \"birds\"".format(lazy_file)
-                )
-                options = widgets.QFileDialog.Options()
+                # First try the most likely path.
+                # This should work usually for songephys data...
                 suggested = lazy_file.split("bird")[0]
-                data_path = widgets.QFileDialog.getExistingDirectory(
-                    self,
-                    "Choose the data directory containing the folder \"birds\"",
-                    suggested,
-                    options=options
-                )
-                if not data_path:
-                    return
-                sound_object.set_data_path(data_path)
+                sound_object.set_data_path(suggested)
+                if not sound_object.validate_paths():
+                    # Ask the user to point to the remote drive "bird" directory
+                    widgets.QMessageBox.about(
+                        self,
+                        "Data directory not found",
+                        "Path to audio data was not found for {}. If using a remote mounted drive. "
+                        "select the data directory containing the folder \"birds\"".format(lazy_file)
+                    )
+                    options = widgets.QFileDialog.Options()
+                    data_path = widgets.QFileDialog.getExistingDirectory(
+                        self,
+                        "Choose the data directory containing the folder \"birds\"",
+                        suggested,
+                        options=options
+                    )
+                    if not data_path:
+                        return
+                    sound_object.set_data_path(data_path)
         elif len(wav_files) > 1:
             sound_object = LazyMultiWavInterface.create_from_directory(dir, force_equal_length=True)
         elif len(wav_files) == 1:
