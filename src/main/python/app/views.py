@@ -69,7 +69,7 @@ class MainView(widgets.QWidget):
         self.mainLayout.addLayout(self.topBar, 0, 0)
 
         self.mainLayout.addWidget(self.topSplitter, 1, 0, 1, 6)
-        self.mainLayout.addWidget(self.bottomBox, 2, 0, 1, 6)
+        # self.mainLayout.addWidget(self.bottomBox, 2, 0, 1, 6)
 
         self.mainLayout.setRowStretch(0, 0)
         self.mainLayout.setRowStretch(1, 4)
@@ -385,6 +385,7 @@ class AudioView(widgets.QWidget):
 
         self.ampenvScaleSlider = widgets.QSlider()
         self.ampenvScaleSlider.setTickPosition(widgets.QSlider.TicksBothSides)
+        self.ampenvScaleSlider.setVisible(False)
         self.ampenvScaleSlider.setMinimum(1)
         self.ampenvScaleSlider.setMaximum(20)
         self.ampenvScaleSlider.setValue(11)
@@ -655,6 +656,11 @@ class AudioView(widgets.QWidget):
         t1, t2 = self.view_state.get("current_range")
         t_arr, sig = self.state.get("sound_object").time_slice(t1, t2)
         sig -= np.mean(sig, axis=0)
+
+        if self.view_state.has("show_ampenv") and len(self.state.get("sources")):
+            self.ampenvScaleSlider.setVisible(self.view_state.get("show_ampenv"))
+        else:
+            self.ampenvScaleSlider.setVisible(False)
 
         if lowres_timeout:
             for ch in channels:
