@@ -1,3 +1,4 @@
+import re
 import uuid
 from contextlib import contextmanager
 from functools import partial
@@ -402,18 +403,24 @@ class AudioView(widgets.QWidget):
         self.scrollbar.setValue(0)
         self.scrollbar.setMinimum(0)
         self.scrollbar.setMaximum(100)
+        self.timeInput = widgets.QLineEdit(self)
+        self.timeInput.setPlaceholderText("Jump to...")
 
         self.scrollbar.valueChanged.connect(self.on_scrollbar_value_change)
+        self.timeInput.returnPressed.connect(self.on_timeinput_value_change)
+        self.timeInput.textChanged.connect(self.timeinput_live_cleaning)
 
         self.windowInfoLayout = widgets.QHBoxLayout()
         self.time_label = widgets.QLabel()
-        self.windowInfoLayout.addWidget(self.time_label)
+        self.windowInfoLayout.addWidget(self.timeInput)
         self.windowInfoLayout.addStretch()
+        self.windowInfoLayout.addWidget(self.time_label)
 
         self.mainLayout.addLayout(self.topBarLayout)
         self.mainLayout.addLayout(self.currentSourcesPanel)
         self.mainLayout.addStretch()
         self.mainLayout.addWidget(self.scrollbar)
+        self.mainLayout.addWidget
         self.mainLayout.addLayout(self.windowInfoLayout)
 
         self.setLayout(self.mainLayout)
@@ -447,7 +454,11 @@ class AudioView(widgets.QWidget):
 
     def _update_time_label(self):
         t1, t2 = self.view_state.get("current_range")
-        self.time_label.setText("{:.2f}s - {:.2f}s".format(t1, t2))
+        self.time_label.setText(
+            "{:.2f}s - {:.2f}s (out of {:.2f}s)".format(
+                t1, t2, self.timescroll_manager.max_time
+            )
+        )
 
     def _reset_thread(self):
         if self.thread is not None:
@@ -597,6 +608,21 @@ class AudioView(widgets.QWidget):
     def on_ampenv_scale_changed(self, new_value):
         with self.redraw_context():
             self.view_state.set("scale_ampenv", (21 - new_value) / 10)
+
+    def timeinput_live_cleaning(self, t):
+        t = "".join([c for c in t if re.match("[0-9]|\.", c)])
+        self.timeInput.setText(t)
+
+    def on_timeinput_value_change(self):
+        t = self.timeInput.text()
+        try:
+            t = float(t)
+        except ValueError:
+            return
+        else:
+            self.on_set_position(t)
+        self.timeInput.setText("")
+        self.timeInput.clearFocus()
 
     def on_scrollbar_value_change(self, new_value):
         t1, t2 = self.timescroll_manager.page2time(new_value)
