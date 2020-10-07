@@ -22,6 +22,14 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 1. Use an installer found at https://github.com/kevinyu/soundsep/releases
 
+#### Troubleshooting
+
+* If you haven't used them before, you may need to install git, pip, and virtualenv. On mac, install homebrew (https://brew.sh/) and then `brew install git`. Pip can be installed with `sudo -H python -m ensurepip`, and virtualenv can be installed via pip with `pip install virtualenv`.
+
+* You may need to install PortAudio. On ubuntu: `sudo apt-get install libportaudio2`
+
+* You may need to install Qt5 on ubuntu. `sudo apt-get install qt5-default`
+
 
 ### Starting the GUI
 
