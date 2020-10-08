@@ -627,6 +627,7 @@ class AudioView(widgets.QWidget):
     def on_scrollbar_value_change(self, new_value):
         t1, t2 = self.timescroll_manager.page2time(new_value)
         self.view_state.set("current_range", (t1, t2))
+        # sends signal that view range changed
         self.events.rangeChanged.emit()
 
     def on_data_loaded(self):
@@ -662,6 +663,9 @@ class AudioView(widgets.QWidget):
         with self.redraw_context():
             self.stop_audio_playback()
             self._update_time_label()
+            self.view_state.clear("selected_spec_range")
+            self.view_state.clear("selected_threshold_line")
+            self.view_state.clear("selected_range")
 
     def on_redraw(self, lowres_timeout=500):
         """Computes spectrogram values for the current viewable window

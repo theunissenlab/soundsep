@@ -27,7 +27,8 @@ class AppState(AppStateSingleton):
         return key in self._data
 
     def clear(self, key):
-        del self._data[key]
+        if self.has(key):
+            del self._data[key]
 
     def reset(self):
         self._data = {}
@@ -61,7 +62,8 @@ class ViewState(ViewStateSingleton):
         return key in self._data
 
     def clear(self, key):
-        del self._data[key]
+        if self.has(key):
+            del self._data[key]
 
     def reset(self):
         self._data = {}
