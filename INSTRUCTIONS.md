@@ -8,7 +8,7 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 #### Option 1: Installing from github
 
-1. `git clone https://github.com/kevinyu/soundsep.git`
+1. `git clone https://github.com/theunissenlab/soundsep.git`
 
 2. `cd soundsep`
 
