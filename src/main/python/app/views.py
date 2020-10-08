@@ -329,7 +329,7 @@ class AudioView(widgets.QWidget):
         self.events = events
         self.state = AppState()
         self.view_state = ViewState()
-        self.settings = QSettings("Theuniseen Lab", "Sound Separation")
+        self.settings = QSettings("Theunissen Lab", "Sound Separation")
         self.timescroll_manager = TimeScrollManager(None)
         self._redrawing = False
 
@@ -815,7 +815,7 @@ class SourceView(widgets.QWidget):
         self.events = events
         self.state = AppState()
         self.view_state = ViewState()
-        self.settings = QSettings("Theuniseen Lab", "Sound Separation")
+        self.settings = QSettings("Theunissen Lab", "Sound Separation")
 
         self.source_idx = source_idx
         self.source = self.state.get("sources")[self.source_idx]

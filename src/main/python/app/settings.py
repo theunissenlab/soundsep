@@ -40,7 +40,7 @@ class _SettingsReader:
         self._settings.setValue(key, val)
 
 
-read_default = _SettingsReader(QSettings("Theuniseen Lab", "Sound Separation"))
+read_default = _SettingsReader(QSettings("Theunissen Lab", "Sound Separation"))
 
 
 class fonts:

@@ -79,7 +79,7 @@ class SpectrogramViewBox(pg.ViewBox):
             super().mouseClickEvent(event)
 
     def wheelEvent(self, event):
-        """Emits the direction of scroll nad the location in fractional position"""
+        """Emits the direction of scroll and the location in fractional position"""
         pos = self.mapSceneToView(event.scenePos())
         xmax = self.viewRange()[0][1]
         ymax = self.viewRange()[1][1]

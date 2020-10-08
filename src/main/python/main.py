@@ -65,7 +65,7 @@ class App(widgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.title = "SoundSep"
-        self.settings = QSettings("Theuniseen Lab", "Sound Separation")
+        self.settings = QSettings("Theunissen Lab", "Sound Separation")
         #self.sources = SourceManager(None)
         self.state = AppState()
         self.view_state = ViewState()

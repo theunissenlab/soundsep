@@ -4,7 +4,7 @@
 
 The main code for the gui is located in `src/main/python/soundsep/app` and the detection/threshold functions are found in `src/main/python/soundsep/detection`. `src/main/python/soundsep/interfaces` is where you would put functions that read audio files of different formats.
 
-Default values for settings and constant values for the gui are defined in `src/main/python/soundsep/app/settings.py`. User adjusted values can/will be set in a settings file accessible with `PyQt5.QtCore.QSettings("Theuniseen Lab", "Sound Separation")` (the location of the settings ini file in the filesystem varies by operating system).
+Default values for settings and constant values for the gui are defined in `src/main/python/soundsep/app/settings.py`. User adjusted values can/will be set in a settings file accessible with `PyQt5.QtCore.QSettings("Theunissen Lab", "Sound Separation")` (the location of the settings ini file in the filesystem varies by operating system).
 
 ## Application State
 
