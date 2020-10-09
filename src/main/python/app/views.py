@@ -610,17 +610,42 @@ class AudioView(widgets.QWidget):
             self.view_state.set("scale_ampenv", (21 - new_value) / 10)
 
     def timeinput_live_cleaning(self, t):
-        t = "".join([c for c in t if re.match("[0-9]|\.", c)])
+        """Prevent any non-digit, ., or : characters in the time jump box
+
+        If there are more than 2 colons, truncate the string to everything
+        before the third colon
+        """
+        t = "".join([c for c in t if re.match("[0-9]|\.|:", c)])
+        if t.count(":") > 2:
+            t = ":".join(t.split(":")[:3])
         self.timeInput.setText(t)
 
     def on_timeinput_value_change(self):
-        t = self.timeInput.text()
+        """Logic to interpret a number string as a time in seconds
+
+        Allows floats, two floats seperated by a ':' (i.e. mm:ss)
+        and three floats separated by ':'s (i.e. hh:mm:ss)
+        """
+        txt = self.timeInput.text()
+        t_blocks = [s for s in txt.split(":") if len(s)][:3]
         try:
-            t = float(t)
+            if len(t_blocks) == 1:
+                s = float(t_blocks[0])
+            elif len(t_blocks) == 2:
+                m = float(t_blocks[0])
+                s = float(t_blocks[1]) + m * 60
+            elif len(t_blocks) == 3:
+                h = float(t_blocks[0])
+                m = float(t_blocks[1]) + h * 60
+                s = float(t_blocks[2]) + m * 60
         except ValueError:
+            widgets.QMessageBox.warning(
+                self,
+                "Error",
+                "Invalid time {}.".format(txt),
+            )
             return
-        else:
-            self.on_set_position(t)
+        self.on_set_position(s)
         self.timeInput.setText("")
         self.timeInput.clearFocus()
 
