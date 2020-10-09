@@ -308,6 +308,9 @@ class App(widgets.QMainWindow):
 
         if os.path.exists(self.save_file):
             loaded_data = np.load(self.save_file, allow_pickle=True)[()]
+
+            # TODO (kevin): if the intervals dataframe exists but doesnt have a CALL_LABELS
+            # Column, add it and fill it with Nones...
             if "sources" in loaded_data:
                 self.state.set("sources", loaded_data["sources"])
 

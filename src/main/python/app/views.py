@@ -1224,9 +1224,40 @@ class SourceView(widgets.QWidget):
         if self.state.has("autosearch"):
             self.on_find_in_selection()
 
-    def on_click(self, loc):
+    def on_click(self, loc, event=None):
         """Clear the selection when a point is clicked (and not dragged)
         """
+        # See if the click was within a known interval
+        # If it was, bring up a context menu for that interval. Otherwise,
+        # simply clear the currently selected range
+        spec_sample_rate = read_default.SPEC_SAMPLE_RATE
+
+        base_t = self.view_state.get("current_range")[0]
+        t = base_t + loc.x() / spec_sample_rate
+
+        if isinstance(self.source.get("intervals"), pd.DataFrame):
+            df = self.source.get("intervals")
+            selector = (df["t_start"] <= t) & (df["t_stop"] >= t)
+            match = df[selector]
+
+            # TODO (kevin): perhaps we should highlight this section of the spectrogram somehow?
+            if len(match) and event is not None:
+                pos = event.screenPos()
+
+                ## Example of creating a menu - probably should move this to a new function
+                self.menu = gui.QMenu()
+                search = gui.QAction("DC", self.menu)
+                delete = gui.QAction("Te", self.menu)
+                merge = gui.QAction("Song", self.menu)
+
+                # TODO (kevin): these should trigger the labeling of the selected interval
+                # in the dataframe
+                self.menu.addAction(search)
+                self.menu.addAction(merge)
+                self.menu.addAction(delete)
+                self.menu.popup(QtCore.QPoint(pos.x(), pos.y()))
+                # return
+
         self.events.rangeSelected.emit(None, None)
 
     def on_range_selected(self, start_t, end_t):
@@ -1488,8 +1519,10 @@ class SourceView(widgets.QWidget):
 
     def _draw_intervals(self):
         """Draw rectangles labeling events for the chosen source"""
+        viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
+
         for rect in self._drawn_intervals:
-            self.spectrogram_plot.removeItem(rect)
+            viewbox.removeItem(rect)
         self._drawn_intervals = []
 
         intervals = self.source.get("intervals", [])
@@ -1516,7 +1549,6 @@ class SourceView(widgets.QWidget):
                 start_frac = (start_t - t1) / win_size
                 duration_frac = (end_t - start_t) / win_size
 
-                viewbox = self.spectrogram_plot.getPlotItem().getViewBox()
                 ((xmin, xmax), (_, ymax)) = viewbox.viewRange()
 
                 rect = gui.QGraphicsRectItem(
@@ -1526,9 +1558,10 @@ class SourceView(widgets.QWidget):
                     ymax / 20
                 )
                 rect.setPen(pg.mkPen(None))
+                # TODO (kevin): choose color based on label
                 color = "#8fcfd1" if not self.source.get("readonly") else "#df5e88"
                 rect.setBrush(pg.mkBrush(color))
-                self.spectrogram_plot.addItem(rect)
+                viewbox.addItem(rect)
                 self._drawn_intervals.append(rect)
 
 

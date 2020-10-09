@@ -45,7 +45,7 @@ class SpectrogramViewBox(pg.ViewBox):
     """
     dragComplete = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
     dragInProgress = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
-    clicked = pyqtSignal(QtCore.QPointF)
+    clicked = pyqtSignal(QtCore.QPointF, object)
     menuSelection = pyqtSignal(object)
     zoomEvent = pyqtSignal(int, object)
 
@@ -105,7 +105,7 @@ class SpectrogramViewBox(pg.ViewBox):
     def mouseClickEvent(self, event):
         if event.button() == Qt.LeftButton:
             event.accept()
-            self.clicked.emit(self.mapSceneToView(event.scenePos()))
+            self.clicked.emit(self.mapSceneToView(event.scenePos()), event)
         else:
             super().mouseClickEvent(event)
 

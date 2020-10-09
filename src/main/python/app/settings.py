@@ -26,6 +26,12 @@ class _defaults:
 
     GITHUB_LINK = "https://github.com/kevinyu/soundsep"
 
+    # TODO (kevin): settings for defining call types and colors?
+    CALL_LABELS = (
+        ("DC", "#FFFFFF"),
+        ("Tet", "#505050"),
+    )
+
 
 class _SettingsReader:
     """Just a helper to make reading settings or default easier to write"""
