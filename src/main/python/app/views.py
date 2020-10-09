@@ -70,7 +70,7 @@ class MainView(widgets.QWidget):
         self.mainLayout.addLayout(self.topBar, 0, 0)
 
         self.mainLayout.addWidget(self.topSplitter, 1, 0, 1, 6)
-        # self.mainLayout.addWidget(self.bottomBox, 2, 0, 1, 6)
+        self.mainLayout.addWidget(self.bottomBox, 2, 0, 1, 6)
 
         self.mainLayout.setRowStretch(0, 0)
         self.mainLayout.setRowStretch(1, 4)
@@ -101,7 +101,7 @@ class MainView(widgets.QWidget):
         layout.addWidget(self.audio_view)
         self.topRightBox.setLayout(layout)
 
-        self.vocal_periods_view = VocalPeriodsView(
+        self.vocal_periods_view = DetectedCallPeriodsView(
             None,
             events=self.events,
         )
@@ -511,6 +511,31 @@ class AudioView(widgets.QWidget):
                         break
         elif shortcut == "Escape":
             self.stop_audio_playback()
+        elif shortcut == "Tab":
+            self.on_cycle_focus(1)
+        elif shortcut == "Shift+Tab":
+            self.on_cycle_focus(-1)
+
+    def on_cycle_focus(self, direction):
+        """Cycle the focused source with tab or shift tab"""
+        if not self.view_state.has("source_focus"):
+            if direction == 1:
+                self.view_state.set("source_focus", 0)
+            elif direction == -1:
+                self.view_state.set("source_focus", len(self.state.get("sources")) - 1)
+        else:
+            current = self.view_state.get("source_focus")
+            if direction == 1:
+                options = np.roll(np.arange(len(self.state.get("sources"))), -current - 1)
+            elif direction == -1:
+                options = np.roll(np.arange(len(self.state.get("sources"))), -current)[::-1]
+            for option_idx in options:
+                guess = self.state.get("sources")[option_idx]
+                if guess["hidden"] == True:
+                    continue
+                else:
+                    self.view_state.set("source_focus", option_idx)
+                    break
 
     def on_play_audio(self, source_idx):
         self.stop_audio_playback()
@@ -824,7 +849,8 @@ class AudioView(widgets.QWidget):
             source_view._clear_drag_lines()
             source_view._update_highlighted_range()
             source_view._draw_intervals()
-            source_view._clear_vertical_lines()
+            if lores:
+                source_view._clear_vertical_lines()
             source_view._draw_xaxis()
 
 
@@ -1258,6 +1284,10 @@ class SourceView(widgets.QWidget):
                 self.menu.popup(QtCore.QPoint(pos.x(), pos.y()))
                 # return
 
+        self.view_state.set(
+            "source_focus",
+            self.source_idx
+        )
         self.events.rangeSelected.emit(None, None)
 
     def on_range_selected(self, start_t, end_t):
@@ -1276,6 +1306,17 @@ class SourceView(widgets.QWidget):
         else:
             start_t, end_t = min(start_t, end_t), max(start_t, end_t)
             self.view_state.set("selected_range", (start_t, end_t))
+
+            # Recalculate the x and y positions (in plot coordinates) to draw
+            # vertical lines
+            spec_sample_rate = read_default.SPEC_SAMPLE_RATE
+            base_t = self.view_state.get("current_range")[0]
+            x = (start_t - base_t) * spec_sample_rate
+            y = (end_t - base_t) * spec_sample_rate
+            self.spectrogram_plot.selected_range_line_start.setValue(x)
+            self.spectrogram_plot.selected_range_line_stop.setValue(y)
+            self.spectrogram_plot.selected_range_line_start.setVisible(True)
+            self.spectrogram_plot.selected_range_line_stop.setVisible(True)
 
     def on_range_highlighted(self, start_t, end_t):
         spec_sample_rate = read_default.SPEC_SAMPLE_RATE
@@ -1321,7 +1362,9 @@ class SourceView(widgets.QWidget):
         else:
             old_count = 0
 
-        if self.view_state.has("selected_threshold_line"):
+        if self.view_state.has("highlighted_range"):
+            events = [self.view_state.get("highlighted_range")]
+        elif self.view_state.has("selected_threshold_line"):
             # (1) Search by amplitude threshold
             y0, y1 = self.view_state.get("selected_threshold_line")
             # Map the xdata onto time values
@@ -1564,6 +1607,130 @@ class SourceView(widgets.QWidget):
                 viewbox.addItem(rect)
                 self._drawn_intervals.append(rect)
 
+
+class DetectedCallPeriodsView(widgets.QWidget):
+    """Walk through preselected/predected time periods
+
+    Switch between self-labeled and autodeteted
+    Shows segment #, forward (next unlabeled), < and >
+    """
+    # file = os.path.join(site_dir, "call_periods.npy")
+    def __init__(self, parent=None, events=None):
+        super().__init__(parent)
+        self.state = AppState()
+        self.view_state = ViewState()
+        self.events = events
+        self._dropdown_map = []
+        self._intervals = None
+        self._current_idx = 0
+        self._current_source_idx = 0
+
+        self.init_ui()
+
+        self.events.dataLoaded.connect(self.on_data_loaded)
+        self.events.sourcesChanged.connect(self.on_sources_changed)
+
+    def init_ui(self):
+        self.mainLayout = widgets.QHBoxLayout()
+
+        self.sourceDropdown = widgets.QComboBox(self)
+        #
+        self.sourceDropdown.activated.connect(self.on_dropdown)
+
+        self.goButton = widgets.QPushButton("Go", self)
+        self.prevButton = widgets.QPushButton("<", self)
+        self.nextButton = widgets.QPushButton(">", self)
+        self.forwardButton = widgets.QPushButton("Next", self)
+        self.segmentIndex = widgets.QSpinBox(self)
+        self.segmentIndex.setMinimum(0)
+        self.segmentIndex.setMaximum(0)
+        self.segmentIndex.setValue(self._current_idx)
+
+        self.goButton.setStyleSheet("width: 0px; height: 30px; color: White; background-color: Green;")
+        self.prevButton.setStyleSheet("width: 0px; height: 30px;")
+        self.nextButton.setStyleSheet("width: 0px; height: 30px;")
+        self.forwardButton.setStyleSheet("width: 0px; height: 30px;")
+        self.segmentIndex.setStyleSheet("width: 100px; height: 30px; font-size: 20px;")
+
+        # Add callbacks for the buttons and their handlers
+        self.goButton.clicked.connect(self.on_go)
+        self.prevButton.clicked.connect(self.on_prev)
+        self.forwardButton.clicked.connect(self.on_forward)
+        self.nextButton.clicked.connect(self.on_next)
+
+        self.mainLayout.addWidget(self.sourceDropdown)
+        self.mainLayout.addWidget(self.goButton)
+        self.mainLayout.addWidget(self.prevButton)
+        self.mainLayout.addWidget(self.segmentIndex)
+        self.mainLayout.addWidget(self.nextButton)
+        self.mainLayout.addWidget(self.forwardButton)
+        self.mainLayout.addStretch()
+
+        self.setLayout(self.mainLayout)
+
+    def on_dropdown(self, idx):
+        target = self._dropdown_map[idx]
+        self._current_source_idx = idx
+        if isinstance(target, dict):
+            # Then its a source
+            self._intervals = target["intervals"]
+        else:
+            # Then its the autodetected periods
+            self._intervals = target
+
+        # Could also just find the closest interval
+        self._current_idx = 0
+        self.segmentIndex.setValue(self._current_idx)
+
+    def on_go(self):
+        self.jump_to(self._current_idx)
+
+    def on_prev(self):
+        self.jump_to(max(0, self._current_idx - 1))
+
+    def on_forward(self):
+        self.jump_to(min(len(self._intervals), self._current_idx + 1))
+
+    def on_next(self):
+        self.jump_to(min(len(self._intervals), self._current_idx + 1))
+
+    def jump_to(self, idx):
+        self._current_idx = idx
+        t1 = self._intervals.iloc[self._current_idx]["t_start"]
+        t2 = self._intervals.iloc[self._current_idx]["t_stop"]
+
+        t_center = np.mean([t1, t2])
+        self.events.setPosition[object, object].emit(t1, TimeScrollManager.ALIGN_CENTER)
+        self.events.rangeHighlighted.emit(t1, t2)
+        self.events.rangeSelected.emit(t1, t2)
+        self.segmentIndex.setValue(self._current_idx)
+
+    def reset_dropdown(self):
+        self.sourceDropdown.clear()
+        if self.state.has("autodetected_periods"):
+            self.sourceDropdown.addItem("[AUTODETECTED]")
+            self._dropdown_map.append(self.state.get("autodetected_periods"))
+            self.setDisabled(False)
+        else:
+            self.setDisabled(True)
+
+        self.segmentIndex.setMaximum(len(self.state.get("autodetected_periods")))
+
+        for source_idx, source in enumerate(self.state.get("sources")):
+            self.sourceDropdown.addItem(source["name"], source_idx)
+            self._dropdown_map.append(source)
+
+    def on_data_loaded(self):
+        self.reset_dropdown()
+        self.on_dropdown(0)
+
+    def on_sources_changed(self):
+        # TODO (kevin): try not to lose the current place...?
+        self.reset_dropdown()
+        if len(self.state.get("sources")) < len(self._dropdown_map) - 1:
+            self.on_dropdown(self._current_source_idx)
+        else:
+            self.on_dropdown(0)
 
 class VocalPeriodsView(widgets.QScrollArea):
     """Show and jump to windows to highlight them"""

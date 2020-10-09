@@ -60,7 +60,9 @@ class App(widgets.QMainWindow):
         "X",
         "Z",
         "Space",
-        "Escape"
+        "Escape",
+        "Tab",
+        "Shift+Tab",
     ]
 
     def __init__(self):
@@ -314,10 +316,15 @@ class App(widgets.QMainWindow):
             if "sources" in loaded_data:
                 self.state.set("sources", loaded_data["sources"])
 
-            if "autodetect" in loaded_data:
-                self.state.set("autodetected_periods", loaded_data["autodetect"])
+            # if "autodetect" in loaded_data:
+            #     self.state.set("autodetected_periods", loaded_data["autodetect"])
             # if "_VIEW_STATE" in loaded_data:
             #     self.view_state.update(loaded_data["_VIEW_STATE"])
+
+        self.autodetected_file = os.path.join(dir, "autodetected.pkl")
+        if os.path.exists(self.autodetected_file):
+            loaded_autodetect_results = pd.read_pickle(self.autodetected_file)
+            self.state.set("autodetected_periods", loaded_autodetect_results)
 
         self.state.set("sound_object", sound_object)
         self.state.set("sound_file", dir)
