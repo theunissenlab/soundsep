@@ -11,7 +11,38 @@ from PyQt5 import QtGui as gui
 
 
 class SpectrogramViewBox(pg.ViewBox):
-    """docstring for SpectrogramViewBox."""
+    """SpectrogramViewBox manages user interactions with the spectrogram box
+
+    Emits the following events
+    ==========================
+    dragInProgress(QPointF, QPointF)
+        Emitted as mouse is held down and dragged over the spectrogram.
+        Sends the start position and end position as QtCore.QPointF objects
+        indicating the start and end positions of the drag line in plot
+        coordinates (i.e. ith sample, jth frequency bin)
+
+    dragComplete(QPointF, QPointF)
+        Emitted as mouse released after being dragged over spectrogram.
+        Sends the start position and end position as QtCore.QPointF objects
+        indicating the start and end positions of the drag line in plot
+        coordinates (i.e. ith sample, jth frequency bin)
+
+    clicked(QPointF, event)
+        Emitted when mouse is clicked and released (not held and dragged).
+        Sends the click position in plot coordinates (ith sample, jth freq bin),
+        as well as the original click event object.
+
+    menuSelection(object)
+        Emitted when a context menu item (right click menu item) is selected.
+        Sends the string identifier for the menu item. Currently these are
+        'search', 'delete', 'merge', 'desperate', 'zoom_in', and 'zoom_out',
+        though these may change.
+
+    zoomEvent(int, object)
+        Emitted when the scroll wheel is rolled. Emits the direction of scroll
+        as an integer (+1 or -1) and a tuple of the x,y position of the cursor
+        during the event in fraction of the window (x and y range from 0-1)
+    """
     dragComplete = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
     dragInProgress = pyqtSignal(QtCore.QPointF, QtCore.QPointF)
     clicked = pyqtSignal(QtCore.QPointF)

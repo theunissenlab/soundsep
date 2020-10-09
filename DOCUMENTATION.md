@@ -33,7 +33,9 @@ Stores application state. Persists when the application is reloaded.
 
 * "sound_file": Path to directory containing the loaded data in "sound_object" - used for reloading
 
-* "sources": List of dictionaries of sources. A Source is represented by a dictionary with the keys "name", "channel", "hidden", and sometimes "intervals". The intervals key if it exists points to a pandas DataFrame object with columns "t_start" and "t_stop" delimiting vocalization periods from that source.
+* "sources": List of dictionaries of sources. A Source is represented by a dictionary with the keys "name", "channel", "hidden", and sometimes "intervals". See below.
+
+* "autodetected_periods": Pandas dataframe with columns "t_start" and "t_stop" delimiting the start and stop times of the autodetected intervals. These is populated by a numpy file included in the loaded directory.
 
 * "autosearch": Is set when data selection should automatically trigger the vocalization period detection function. Deleted when this this functionality should be turned off.
 
@@ -67,6 +69,19 @@ Stores state of current audio view including visible time range information and 
 * "show_ampenv"
 
 * "highlighted_range": A single highlighted range for the user. Highlight is visually separate from labeled intervals.
+
+## Sources
+
+The 'sources' key in the `app.state.AppState` is the main data structure of the application. Each source is a dictionary with the following keys:
+"name", "channel", "hidden",
+
+`name`: The name of the source
+
+`channel`: The channel chosen to represent the source (editable)
+
+`hidden`: Boolean flag for whether the spectrogram for this source should be shown in the GUI.
+
+`intervals`: The intervals key if it exists points to a pandas DataFrame object with columns "t_start" and "t_stop" delimiting vocalization periods from that source. It will also have a column indicating the call type label (default to None if they are not labeled).
 
 ## API
 
