@@ -18,6 +18,8 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 5. `pip install -r requirements.txt`
 
+* on ubuntu you may need to also install PortAudio library `sudo apt-get install libportaudio2`
+
 #### Option 2.
 
 1. Use an installer found at https://github.com/kevinyu/soundsep/releases
