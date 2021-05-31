@@ -367,22 +367,32 @@ class AudioView(widgets.QWidget):
 
         self.showAmpenvToggle = widgets.QPushButton("Show Ampenv")
         self.showAmpenvToggle.setCheckable(True)
+
         self.selectByThresholdToggle = widgets.QPushButton("Select by Threshold")
         self.selectByThresholdToggle.setCheckable(True)
+
         self.autoSearchToggle = widgets.QPushButton("Auto Search on Drag")
         self.autoSearchToggle.setCheckable(True)
 
         if self.state.has("autosearch"):
             self.autoSearchToggle.toggle()
 
+        self.spectralDerivativeToggle = widgets.QPushButton("View as spectral derivative")
+        self.spectralDerivativeToggle.setCheckable(True)
+
+        if self.state.has("spectral_derivative"):
+            self.spectralDerivativeToggle.toggle()
+
         self.topBarLayout.addWidget(self.showAmpenvToggle)
         self.topBarLayout.addWidget(self.selectByThresholdToggle)
         self.topBarLayout.addWidget(self.autoSearchToggle)
+        self.topBarLayout.addWidget(self.spectralDerivativeToggle)
 
         self.topBarLayout.addStretch()
         self.showAmpenvToggle.clicked.connect(self.on_show_ampenv)
         self.selectByThresholdToggle.clicked.connect(self.on_toggle_threshold)
         self.autoSearchToggle.clicked.connect(self.on_auto_search)
+        self.spectralDerivativeToggle.clicked.connect(self.on_spectral_derivative)
 
         self.ampenvScaleSlider = widgets.QSlider()
         self.ampenvScaleSlider.setTickPosition(widgets.QSlider.TicksBothSides)
@@ -534,6 +544,13 @@ class AudioView(widgets.QWidget):
             self.state.set("autosearch", True)
         else:
             self.state.clear("autosearch")
+
+    def on_spectral_derivative(self):
+        with self.redraw_context():
+            if self.spectralDerivativeToggle.isChecked():
+                self.state.set("spectral_derivative", True)
+            else:
+                self.state.clear("spectral_derivative")
 
     def on_lowres_timer(self):
         """Draw the spectrogram in full hi resolution"""
@@ -1065,15 +1082,28 @@ class SourceView(widgets.QWidget):
         an amp env if amp env visualization is requested.
         """
         # Do the db conversion
-        logspec = 20 * np.log10(np.abs(spec))
-        max_b = logspec.max()
-        min_b = logspec.max() - 40
-        logspec[logspec < min_b] = min_b
-        self.image.setImage(logspec.T)
+
+        if self.state.has("spectral_derivative"):
+            dy, dx = np.gradient(np.abs(spec))
+            theta = np.arctan2(dy, dx)
+            spectral_derivative = np.abs(dy) * np.sin(theta) + np.abs(dx) * np.cos(theta)
+            clim = min(np.abs(np.max(spectral_derivative)), np.abs(np.min(spectral_derivative)))
+
+            self.image.setImage(spectral_derivative.T)
+
+            self.image.setLevels([-clim / 4, clim / 4])
+        else:
+            logspec = 20 * np.log10(np.abs(spec))
+            max_b = logspec.max()
+            min_b = logspec.max() - 40
+            logspec[logspec < min_b] = min_b
+            self.image.setImage(logspec.T)
+
         self._current_spectrogram_yscale = read_default.SPEC_FREQ_SPACING
+
         # instead of computing a separate ampenv, just use the spectrogram power
         if show_ampenv:
-            ampenv = np.sum(spec, axis=0)
+            ampenv = np.sum(np.abs(spec), axis=0)
             # Smooth the "ampenv" (which is just computed from the spectrogram)
             ampenv = savgol_filter(ampenv, 21, 7)
             self.draw_ampenv(t_spec, ampenv, norm=ampenv_norm)
@@ -1207,8 +1237,8 @@ class SourceView(widgets.QWidget):
             )
 
         spec_range = sorted(np.array([
-            start.y() * self._current_spectrogram_yscale,
-            end.y() * self._current_spectrogram_yscale
+            max(0.1, start.y()) * self._current_spectrogram_yscale,
+            max(0.1, end.y()) * self._current_spectrogram_yscale
         ]))
         self.view_state.set(
             "selected_spec_range",
@@ -1322,7 +1352,7 @@ class SourceView(widgets.QWidget):
             if self.view_state.has("selected_spec_range"):
                 y0, y1 = self.view_state.get("selected_spec_range")
             else:
-                y0, y1 = 1000.0, 8000.0
+                y0, y1 = 1000.0, 10000.0
             events = threshold_all_events(
                 self.state.get("sound_object"),
                 window_size=None,
@@ -1341,7 +1371,11 @@ class SourceView(widgets.QWidget):
             # if self.view_state.has("selected_spec_range"):
             #     y0, y1 = self.view_state.get("selected_spec_range")
             # else:
-            y0, y1 = 1000.0, 8000.0
+            if self.view_state.has("selected_spec_range"):
+                y0, y1 = self.view_state.get("selected_spec_range")
+            else:
+                y0, y1 = 1000.0, 10000.0
+
             # use a lower / higher threshold
             t_arr, sig = self.state.get("sound_object").time_slice(t0, t1)
             t_arr += t0

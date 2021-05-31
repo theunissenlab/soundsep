@@ -5,9 +5,9 @@ from PyQt5 import QtGui as gui
 class _defaults:
     MAX_RECENT_FILES = 5
     SPEC_SAMPLE_RATE = 500
-    SPEC_FREQ_SPACING = 100
+    SPEC_FREQ_SPACING = 50
     MIN_FREQ = 250
-    MAX_FREQ = 8000
+    MAX_FREQ = 10000
 
     LORES_SCALES = [1.0, 2.0, 4.0, 8.0, 12.0, 16.0]
     LORES_SAMPLE_RATE_FACTOR = [4, 8, 12, 18, 22, 25]
@@ -20,7 +20,7 @@ class _defaults:
     WINDOW_SIZE = 6.0
     PAGE_STEP = 40  # number of pages per window
 
-    KEYBOARD_TIME_STEP_FRACTION = 8
+    KEYBOARD_TIME_STEP_FRACTION = 4
 
     PLAYBACK_LINE_STEP = 20  # how far to step forward the playback line in samples
 
