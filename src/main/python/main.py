@@ -51,6 +51,7 @@ class App(widgets.QMainWindow):
         "D",
         "Shift+D",
         "E",
+        "F",
         "M",
         "Q",
         "S",
@@ -59,6 +60,7 @@ class App(widgets.QMainWindow):
         "Shift+W",
         "X",
         "Z",
+        "Ctrl+W",
         "Space",
         "Escape"
     ]
@@ -80,6 +82,10 @@ class App(widgets.QMainWindow):
 
         if self.settings.value("OPEN_RECENT", []):
             self.load_dir(self.settings.value("OPEN_RECENT")[-1])
+
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self.autosave)
+        self.autosave_timer.start(read_default.AUTOSAVE_SECONDS * 1000)
 
     def init_actions(self):
         self.open_directory_action = widgets.QAction("Open Directory", self)
@@ -373,6 +379,17 @@ class App(widgets.QMainWindow):
             "Saved",
             "Saved successfully.",
         )
+
+    def autosave(self):
+        save_data = {}
+        if self.state.has("sources"):
+            save_data["sources"] = self.state.get("sources")
+
+        try:
+            np.save(self.save_file + ".autosave", save_data)
+            print("Autosaved to {}".format(self.save_file + ".autosave"))
+        except:
+            print("Warning: autosave failed!")
 
     def export(self, fmt="csv"):
         # Save the sources to a pandas dataframe

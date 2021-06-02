@@ -36,7 +36,8 @@ class SpectrogramViewBox(pg.ViewBox):
             self.search = gui.QAction("Search", self.menu)
             self.delete = gui.QAction("Delete Selected Interval (Del)", self.menu)
             self.merge = gui.QAction("Merge", self.menu)
-            self.desperate = gui.QAction("I'm desperate", self.menu)
+            self.force = gui.QAction("Force Label", self.menu)
+            self.desperate = gui.QAction("Search in broadband noise ", self.menu)
 
             self.zoom_to_selection = gui.QAction("Zoom to Selection", self.menu)
             self.zoom_out_fully = gui.QAction("Zoom Out", self.menu)
@@ -44,6 +45,7 @@ class SpectrogramViewBox(pg.ViewBox):
             self.search.triggered.connect(partial(self._emit_menu_selection, "search"))
             self.delete.triggered.connect(partial(self._emit_menu_selection, "delete"))
             self.merge.triggered.connect(partial(self._emit_menu_selection, "merge"))
+            self.force.triggered.connect(partial(self._emit_menu_selection, "force"))
             self.desperate.triggered.connect(partial(self._emit_menu_selection, "desperate"))
 
             self.zoom_to_selection.triggered.connect(partial(self._emit_menu_selection, "zoom_in"))
@@ -52,6 +54,7 @@ class SpectrogramViewBox(pg.ViewBox):
             self.menu.addAction(self.search)
             self.menu.addAction(self.merge)
             self.menu.addAction(self.delete)
+            self.menu.addAction(self.force)
             self.menu.addAction(self.desperate)
             self.menu.addSeparator()
             self.menu.addAction(self.zoom_to_selection)

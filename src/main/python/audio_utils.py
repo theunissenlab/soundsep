@@ -30,8 +30,8 @@ def get_amplitude_envelope(
     envelope for that bin.
     """
     spectral = True
-    filtered = highpass_filter(data.T, fs, highpass).T
-    filtered = lowpass_filter(filtered.T, fs, lowpass).T
+    filtered = highpass_filter(data.T, fs, highpass, filter_order=10).T
+    filtered = lowpass_filter(filtered.T, fs, lowpass, filter_order=10).T
 
     if mode == "max_zscore":
         t_spec, f_spec, spec, _ = spectrogram(

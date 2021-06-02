@@ -1140,6 +1140,8 @@ class SourceView(widgets.QWidget):
         elif shortcut == "Q":
             # merge
             self.on_merge_selection()
+        elif shortcut == "F":
+            self.on_force_selection()
         elif shortcut == "Z":
             self.on_find_in_selection(0, mode="max_zscore")
         elif shortcut == "Space":
@@ -1154,6 +1156,8 @@ class SourceView(widgets.QWidget):
             self.on_delete_selection()
         elif item == "desperate":
             self.on_find_in_selection(0, mode="max_zscore")
+        elif item == "force":
+            self.on_force_select()
         elif item == "zoom_in":
             self.events.zoomEvent[str].emit("selection")
         elif item == "zoom_out":
@@ -1289,6 +1293,40 @@ class SourceView(widgets.QWidget):
             self.view_state.set("highlighted_range", (start_t, end_t))
             self._update_highlighted_range()
 
+    def on_force_selection(self):
+        """Labels the currently selected segment
+        """
+        if not self.view_state.has("selected_range"):
+            return
+
+        if self.source.get("readonly"):
+            return
+
+        t0, t1 = self.view_state.get("selected_range")
+
+        # Replaces the relevant rows in the dataframe
+        new_rows = [{
+            "t_start": t0,
+            "t_stop": t1,
+        }]
+
+        if isinstance(self.source.get("intervals"), pd.DataFrame):
+            df = self.source.get("intervals")
+            selector = (
+                (df["t_start"] >= t0) & (df["t_stop"] <= t1) |
+                (df["t_start"] < t0) & (df["t_stop"] > t0) |
+                (df["t_start"] < t1) & (df["t_stop"] > t1)
+            )
+            new_df = df[~selector].copy()
+            new_df = new_df.append(new_rows, ignore_index=False, sort=True)
+        else:
+            new_df = pd.DataFrame(new_rows)
+
+        new_df = new_df.sort_values(by="t_start")
+
+        self.source["intervals"] = new_df
+        self._draw_intervals()
+
     def on_find_in_selection(self, modify=0, mode="broadband"):
         """Searches for calls in selected window
 
@@ -1349,10 +1387,11 @@ class SourceView(widgets.QWidget):
             ]
         elif modify == 0 or old_count == 0:
             # (2) Search by frequency band selected
-            if self.view_state.has("selected_spec_range"):
+            if self.view_state.has("selected_spec_range") and mode == "broadband":
                 y0, y1 = self.view_state.get("selected_spec_range")
             else:
-                y0, y1 = 1000.0, 10000.0
+                y0, y1 = 250.0, 10000.0
+
             events = threshold_all_events(
                 self.state.get("sound_object"),
                 window_size=None,
@@ -1374,7 +1413,7 @@ class SourceView(widgets.QWidget):
             if self.view_state.has("selected_spec_range"):
                 y0, y1 = self.view_state.get("selected_spec_range")
             else:
-                y0, y1 = 1000.0, 10000.0
+                y0, y1 = 250.0, 10000.0
 
             # use a lower / higher threshold
             t_arr, sig = self.state.get("sound_object").time_slice(t0, t1)

@@ -22,6 +22,8 @@ class _defaults:
 
     KEYBOARD_TIME_STEP_FRACTION = 4
 
+    AUTOSAVE_SECONDS = 10
+
     PLAYBACK_LINE_STEP = 20  # how far to step forward the playback line in samples
 
     GITHUB_LINK = "https://github.com/kevinyu/soundsep"

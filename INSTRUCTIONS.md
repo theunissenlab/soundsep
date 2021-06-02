@@ -32,6 +32,8 @@ This GUI is designed to make it easy to segment vocalizations across multiple ch
 
 * You may need to install Qt5 on ubuntu. `sudo apt-get install qt5-default`
 
+* If the program crashes, you can reload an autosaved file by going to File > Load Sources and loading the file "outputs/save.npy.autosave.npy". The program autosaves the sources table every 10 seconds in that file.
+
 
 ### Starting the GUI
 
@@ -130,6 +132,8 @@ The keyboard shortcuts in this are designed to have your left hand on the keyboa
 `Q`: Merge selected segments
 
 `E`: Toggle between amplitude envelope mode on/off
+
+`F`: "Force"-label (manually label) the selected segment (useful if nothing else works)
 
 `Z`: Segment into calls if you're desperate (better in broadband noise)
 
