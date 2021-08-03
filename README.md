@@ -1,3 +1,8 @@
+# This is an old version
+
+Use the new version at https://github.com/theunissenlab/soundsep2
+
+
 # Sound Separation
 
 Sound separation code for zebra finch vocalizations.
