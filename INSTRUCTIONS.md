@@ -78,7 +78,7 @@ toplevel/
 In this structure, there can be one or more wav files representing different time periods of audio, and each wav file contains 1+ channels of audio data.
 
 ```
-toplevel/
+toplevel/wavs/
     [timestamp0].wav
     [timestamp1].wav
     ...
