@@ -3,7 +3,7 @@ fbs==0.8.5
 hdbscan==0.8.24
 ipython==7.9.0
 jupyter==1.0.0
-numpy==1.18.1
+numpy==1.22.0
 pandas==1.1.3
 pyqtgraph==0.10.0
 PyQt5==5.15.1
